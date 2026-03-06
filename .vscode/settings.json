@@ -1,0 +1,8 @@
+{
+    "C_Cpp.errorSquiggles": "enabled",
+    "files.associations": {
+        "freertos.h": "c",
+        "cmsis_os.h": "c",
+        "system.h": "c"
+    }
+}
