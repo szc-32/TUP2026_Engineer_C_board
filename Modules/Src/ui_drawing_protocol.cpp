@@ -54,9 +54,18 @@ void Char_Graphic(ext_client_string_t* graphic,//×îÖÕÒª·¢³öÈ¥µÄÊı×éÖĞµÄÊı¾İ¶ÎÄÚÈ
 	data_struct->radius = 0;
 	data_struct->end_x = 0;
 	data_struct->end_y = 0;
-	
-	memcpy(graphic->data,empty_line,19);
-  memcpy(graphic->data,character,length);
+
+	uint32_t safe_len = length;
+	if (safe_len >= sizeof(graphic->data))
+	{
+		safe_len = sizeof(graphic->data) - 1U;
+	}
+	memcpy(graphic->data, empty_line, sizeof(graphic->data));
+	if ((character != NULL) && (safe_len > 0U))
+	{
+		memcpy(graphic->data, character, safe_len);
+	}
+	graphic->data[safe_len] = '\0';
 }
 
 //************************************»æÖÆÏóĞÎ*******************************/

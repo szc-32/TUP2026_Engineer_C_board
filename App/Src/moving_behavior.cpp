@@ -5,6 +5,29 @@
 #include "referee_data.h"
 #include "buzzer.h"
 
+// DM机械臂自定义控制器增益（集中配置）
+#define DM_ARM_CUSTOM_POS_GAIN            0.0008f
+#define DM_ARM_CUSTOM_ROT_GAIN            0.0020f
+#define DM_ARM_CUSTOM_END_AXIS_GAIN       0.0020f
+#define DM_ARM_CUSTOM_POS_DEADZONE        0.02f
+#define DM_ARM_CUSTOM_ROT_DEADZONE        0.02f
+#define DM_ARM_CUSTOM_INPUT_LPF_ALPHA     0.25f
+
+// 目标位姿软限幅（机械臂基坐标系）
+#define DM_ARM_TARGET_X_MIN              -1.20f
+#define DM_ARM_TARGET_X_MAX               1.20f
+#define DM_ARM_TARGET_Y_MIN              -1.20f
+#define DM_ARM_TARGET_Y_MAX               1.20f
+#define DM_ARM_TARGET_Z_MIN               0.00f
+#define DM_ARM_TARGET_Z_MAX               1.60f
+#define DM_ARM_TARGET_YAW_MIN            -3.20f
+#define DM_ARM_TARGET_YAW_MAX             3.20f
+
+// 单周期目标变化斜率限制
+#define DM_ARM_SLEW_XY_STEP_MAX           0.0020f
+#define DM_ARM_SLEW_Z_STEP_MAX            0.0016f
+#define DM_ARM_SLEW_YAW_STEP_MAX          0.0060f
+
 static bool_t g_dm_arm_target_inited = FALSE;
 static ArmPose_t g_dm_arm_target_pose = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 static fp32 g_dm_arm_locked_pitch = 0.0f;
@@ -26,6 +49,8 @@ static uint16_t g_cali_beep_period_tick = 0;
 static uint16_t g_cali_beep_psc = MOTOR_PSC;
 static fp32 g_dm_gyro_cali_scale[3] = {1.0f, 1.0f, 1.0f};
 static fp32 g_dm_gyro_cali_offset[3] = {0.0f, 0.0f, 0.0f};
+static fp32 g_dm_custom_pos_lpf[3] = {0.0f, 0.0f, 0.0f};
+static fp32 g_dm_custom_rot_lpf[3] = {0.0f, 0.0f, 0.0f};
 static forward_kinematics_t g_master_fk_solver;
 static bool_t g_master_fk_inited = FALSE;
 static bool_t g_master_fk_data_valid = FALSE;
@@ -38,6 +63,21 @@ static const fp32 g_master_fk_default_q_min[ARM_DOF] = {-1000.0f, -1000.0f, -100
 static const fp32 g_master_fk_default_q_max[ARM_DOF] = {1000.0f, 1000.0f, 1000.0f, 1000.0f, 1000.0f, 1000.0f};
 
 static fp32 DMArmClampValue(fp32 value, fp32 low, fp32 high);
+static fp32 DMArmApplyDeadzone(fp32 value, fp32 deadzone);
+static fp32 DMArmLowPass(fp32 prev, fp32 input, fp32 alpha);
+static fp32 DMArmClampStep(fp32 delta, fp32 step_max);
+static void DMArmClampTargetPose(ArmPose_t *pose);
+static void DMArmApplyTargetSlew(const ArmPose_t *prev_pose, ArmPose_t *target_pose);
+
+// 维持持续鸣叫（等效于 BuzzerWarn(0, 0, psc, 10000)）
+static void CalibrateBeepKeepOn(void)
+{
+	buzzer.buzzer_warn_num_set = 0;
+	buzzer.buzzer_warn_interval = 0;
+	buzzer.buzzer_psc = g_cali_beep_psc;
+	buzzer.buzzer_pwm = 10000;
+	buzzer.buzzer_off_tick = 0;
+}
 
 static void CalibrateBeepStart(uint16_t total_tick, uint16_t on_tick, uint16_t period_tick, uint16_t psc)
 {
@@ -57,21 +97,22 @@ static void CalibrateBeepUpdate(void)
 
 	if (g_cali_beep_period_tick == 0U)
 	{
-		buzzer.BuzzerWarn(0, 0, g_cali_beep_psc, 10000);
+		CalibrateBeepKeepOn();
 		g_cali_beep_tick++;
 		return;
 	}
 
 	if ((g_cali_beep_tick % g_cali_beep_period_tick) < g_cali_beep_on_tick)
 	{
-		buzzer.BuzzerWarn(0, 0, g_cali_beep_psc, 10000);
+		CalibrateBeepKeepOn();
 	}
 
 	g_cali_beep_tick++;
 }
 
 static bool_t g_legacy_end_axis_inited = FALSE;
-static const fp32 g_legacy_end_cmd_gain = 0.003f;
+// 旧末端轴通道：将控制器 pitch/roll 增量映射到旧版 pitch/roll 电机。
+static const fp32 g_legacy_end_cmd_gain = DM_ARM_CUSTOM_END_AXIS_GAIN;
 static const fp32 g_legacy_pitch_range_deg = 180.0f;
 static const fp32 g_legacy_roll_range_deg = 360.0f;
 static const fp32 g_legacy_deg_to_rad = 0.01745329252f;
@@ -98,6 +139,7 @@ static void DMArmLegacyEndEnsureInit(void)
 
 	mv->pitch_motor.motor_angle_set = mv->pitch_motor.motor_angle;
 	mv->roll_motor.motor_angle_set = mv->roll_motor.motor_angle;
+	// 记录当前轴中心，作为增量控制的软限幅中心。
 	g_legacy_pitch_center_ecd = mv->pitch_motor.motor_angle;
 	g_legacy_roll_center_ecd = mv->roll_motor.motor_angle;
 	g_legacy_end_axis_inited = TRUE;
@@ -119,6 +161,7 @@ static void DMArmLegacyEndApplyDelta(fp32 pitch_delta_rad, fp32 roll_delta_rad)
 	mv->pitch_motor.motor_angle_set += pitch_delta_rad / MOTOR_ECD_TO_RAD;
 	mv->roll_motor.motor_angle_set += roll_delta_rad / MOTOR_ECD_TO_RAD;
 
+	// 限幅，防止重复增量命令导致目标无限漂移。
 	mv->pitch_motor.motor_angle_set = DMArmClampValue(mv->pitch_motor.motor_angle_set,
 		g_legacy_pitch_center_ecd - pitch_half_range_ecd,
 		g_legacy_pitch_center_ecd + pitch_half_range_ecd);
@@ -162,6 +205,7 @@ static void DMArmMasterFKEnsureInit(void)
 
 	g_master_fk_solver.Reset();
 	g_master_fk_solver.SetAxisNum(ARM_DOF);
+	// 复用机械臂 IK/FK 模型，保证主控FK与机械臂IK使用同一运动学约定。
 	g_master_fk_solver.BindSolver(ArmGetSolver());
 
 	ArmKinematics6D *solver = ArmGetSolver();
@@ -231,6 +275,7 @@ static bool_t DMArmTryUpdateTargetFromMasterFK(void)
 {
 	if (g_master_fk_data_valid == FALSE)
 	{
+		g_master_fk_debug.last_fk_status = (uint8_t)FK_ERR_NOT_READY;
 		return FALSE;
 	}
 
@@ -265,6 +310,7 @@ static bool_t DMArmTryUpdateTargetFromMasterFK(void)
 	}
 
 	g_dm_arm_target_pose = pose_out;
+	// 保持末端姿态锁：当前流程中主控FK仅驱动 XYZ 与 yaw。
 	g_dm_arm_target_pose.pitch = g_dm_arm_locked_pitch;
 	g_dm_arm_target_pose.roll = g_dm_arm_locked_roll;
 	g_master_fk_debug.pose = pose_out;
@@ -283,6 +329,45 @@ static fp32 DMArmAbsValue(fp32 value)
 	return value;
 }
 
+static fp32 DMArmApplyDeadzone(fp32 value, fp32 deadzone)
+{
+	if (DMArmAbsValue(value) <= deadzone)
+	{
+		return 0.0f;
+	}
+	if (value > 0.0f)
+	{
+		return value - deadzone;
+	}
+	return value + deadzone;
+}
+
+static fp32 DMArmLowPass(fp32 prev, fp32 input, fp32 alpha)
+{
+	if (alpha <= 0.0f)
+	{
+		return prev;
+	}
+	if (alpha >= 1.0f)
+	{
+		return input;
+	}
+	return prev + alpha * (input - prev);
+}
+
+static fp32 DMArmClampStep(fp32 delta, fp32 step_max)
+{
+	if (delta > step_max)
+	{
+		return step_max;
+	}
+	if (delta < -step_max)
+	{
+		return -step_max;
+	}
+	return delta;
+}
+
 static fp32 DMArmClampValue(fp32 value, fp32 low, fp32 high)
 {
 	if (value < low)
@@ -294,6 +379,30 @@ static fp32 DMArmClampValue(fp32 value, fp32 low, fp32 high)
 		return high;
 	}
 	return value;
+}
+
+static void DMArmClampTargetPose(ArmPose_t *pose)
+{
+	if (pose == 0)
+	{
+		return;
+	}
+	pose->x = DMArmClampValue(pose->x, DM_ARM_TARGET_X_MIN, DM_ARM_TARGET_X_MAX);
+	pose->y = DMArmClampValue(pose->y, DM_ARM_TARGET_Y_MIN, DM_ARM_TARGET_Y_MAX);
+	pose->z = DMArmClampValue(pose->z, DM_ARM_TARGET_Z_MIN, DM_ARM_TARGET_Z_MAX);
+	pose->yaw = DMArmClampValue(pose->yaw, DM_ARM_TARGET_YAW_MIN, DM_ARM_TARGET_YAW_MAX);
+}
+
+static void DMArmApplyTargetSlew(const ArmPose_t *prev_pose, ArmPose_t *target_pose)
+{
+	if ((prev_pose == 0) || (target_pose == 0))
+	{
+		return;
+	}
+	target_pose->x = prev_pose->x + DMArmClampStep(target_pose->x - prev_pose->x, DM_ARM_SLEW_XY_STEP_MAX);
+	target_pose->y = prev_pose->y + DMArmClampStep(target_pose->y - prev_pose->y, DM_ARM_SLEW_XY_STEP_MAX);
+	target_pose->z = prev_pose->z + DMArmClampStep(target_pose->z - prev_pose->z, DM_ARM_SLEW_Z_STEP_MAX);
+	target_pose->yaw = prev_pose->yaw + DMArmClampStep(target_pose->yaw - prev_pose->yaw, DM_ARM_SLEW_YAW_STEP_MAX);
 }
 
 static void DMArmSetInitPoseWithJointLimit(void)
@@ -389,12 +498,14 @@ static void DMArmUpdateTargetFromInput(void)
 	const fp32 pose_z_gain = 0.0006f;
 	const fp32 pose_yaw_gain = 0.00012f;
 	const fp32 pose_pitch_gain = 0.0001f;
-	const fp32 custom_pos_gain = 0.001f;
-	const fp32 custom_rot_gain = 0.003f;
+	const fp32 custom_pos_gain = DM_ARM_CUSTOM_POS_GAIN;
+	const fp32 custom_rot_gain = DM_ARM_CUSTOM_ROT_GAIN;
 	ext_robot_interactive_data_t custom_ctrl_data;
+	ArmPose_t prev_target_pose;
 
 	DMArmEnsureTargetInit();
 	g_dm_arm_custom_input_active = FALSE;
+	prev_target_pose = g_dm_arm_target_pose;
 
 	if (IF_KEY_PRESSED_Z)
 	{
@@ -419,18 +530,45 @@ static void DMArmUpdateTargetFromInput(void)
 
 	if (RefereePopCustomControllerData(&custom_ctrl_data) == TRUE)
 	{
-		g_dm_arm_target_pose.x += custom_ctrl_data.x_dis * custom_pos_gain;
-		g_dm_arm_target_pose.y += custom_ctrl_data.y_dis * custom_pos_gain;
-		g_dm_arm_target_pose.z += custom_ctrl_data.z_dis * custom_pos_gain;
-		g_dm_arm_target_pose.yaw += custom_ctrl_data.yaw_rad * custom_rot_gain;
-		DMArmLegacyEndApplyDelta(custom_ctrl_data.pitch_rad * custom_rot_gain,
-			custom_ctrl_data.roll_rad * custom_rot_gain);
+		// 自定义控制器按机械臂基坐标系“增量指令”解释。
+		fp32 x_in = DMArmApplyDeadzone(custom_ctrl_data.x_dis, DM_ARM_CUSTOM_POS_DEADZONE);
+		fp32 y_in = DMArmApplyDeadzone(custom_ctrl_data.y_dis, DM_ARM_CUSTOM_POS_DEADZONE);
+		fp32 z_in = DMArmApplyDeadzone(custom_ctrl_data.z_dis, DM_ARM_CUSTOM_POS_DEADZONE);
+		fp32 yaw_in = DMArmApplyDeadzone(custom_ctrl_data.yaw_rad, DM_ARM_CUSTOM_ROT_DEADZONE);
+		fp32 pitch_in = DMArmApplyDeadzone(custom_ctrl_data.pitch_rad, DM_ARM_CUSTOM_ROT_DEADZONE);
+		fp32 roll_in = DMArmApplyDeadzone(custom_ctrl_data.roll_rad, DM_ARM_CUSTOM_ROT_DEADZONE);
+
+		g_dm_custom_pos_lpf[0] = DMArmLowPass(g_dm_custom_pos_lpf[0], x_in, DM_ARM_CUSTOM_INPUT_LPF_ALPHA);
+		g_dm_custom_pos_lpf[1] = DMArmLowPass(g_dm_custom_pos_lpf[1], y_in, DM_ARM_CUSTOM_INPUT_LPF_ALPHA);
+		g_dm_custom_pos_lpf[2] = DMArmLowPass(g_dm_custom_pos_lpf[2], z_in, DM_ARM_CUSTOM_INPUT_LPF_ALPHA);
+		g_dm_custom_rot_lpf[0] = DMArmLowPass(g_dm_custom_rot_lpf[0], yaw_in, DM_ARM_CUSTOM_INPUT_LPF_ALPHA);
+		g_dm_custom_rot_lpf[1] = DMArmLowPass(g_dm_custom_rot_lpf[1], pitch_in, DM_ARM_CUSTOM_INPUT_LPF_ALPHA);
+		g_dm_custom_rot_lpf[2] = DMArmLowPass(g_dm_custom_rot_lpf[2], roll_in, DM_ARM_CUSTOM_INPUT_LPF_ALPHA);
+
+		g_dm_arm_target_pose.x += g_dm_custom_pos_lpf[0] * custom_pos_gain;
+		g_dm_arm_target_pose.y += g_dm_custom_pos_lpf[1] * custom_pos_gain;
+		g_dm_arm_target_pose.z += g_dm_custom_pos_lpf[2] * custom_pos_gain;
+		g_dm_arm_target_pose.yaw += g_dm_custom_rot_lpf[0] * custom_rot_gain;
+		DMArmLegacyEndApplyDelta(g_dm_custom_rot_lpf[1] * custom_rot_gain,
+			g_dm_custom_rot_lpf[2] * custom_rot_gain);
 		g_dm_arm_custom_input_active = TRUE;
+	}
+	else
+	{
+		// 无新数据时缓慢回零，避免滤波残留导致持续漂移。
+		for (uint8_t i = 0; i < 3; i++)
+		{
+			g_dm_custom_pos_lpf[i] = DMArmLowPass(g_dm_custom_pos_lpf[i], 0.0f, DM_ARM_CUSTOM_INPUT_LPF_ALPHA);
+			g_dm_custom_rot_lpf[i] = DMArmLowPass(g_dm_custom_rot_lpf[i], 0.0f, DM_ARM_CUSTOM_INPUT_LPF_ALPHA);
+		}
 	}
 
 	g_dm_arm_target_pose.pitch = g_dm_arm_locked_pitch;
 	g_dm_arm_target_pose.roll = g_dm_arm_locked_roll;
+	DMArmClampTargetPose(&g_dm_arm_target_pose);
+	DMArmApplyTargetSlew(&prev_target_pose, &g_dm_arm_target_pose);
 
+	// 统一目标入口：下游由 IK 与 DM 电机指令链路继续处理。
 	ArmControlSetTargetPose(&g_dm_arm_target_pose, 0.0f);
 }
 

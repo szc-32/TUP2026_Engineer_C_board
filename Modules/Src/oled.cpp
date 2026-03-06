@@ -373,7 +373,7 @@ void OLED_printf(uint8_t row, uint8_t col, const char *fmt,...)
   }
   va_start(ap, fmt);
 
-  vsprintf((char *)LCD_BUF, fmt, ap);
+  vsnprintf((char *)LCD_BUF, sizeof(LCD_BUF), fmt, ap);
 
   va_end(ap);
 

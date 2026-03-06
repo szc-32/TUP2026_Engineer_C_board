@@ -25,7 +25,7 @@ void USARTInit(Usart_Instance_t *init_module,UART_HandleTypeDef *init_handle,USA
 {
 	init_module->usart_handle = init_handle;
 	init_module->rx_mode = init_mode;
-	init_module->rx_buf_size = init_size;
+	init_module->rx_buf_size = (init_size > MAX_USART_RXBUF) ? MAX_USART_RXBUF : init_size;
 	init_module->callback_func = init_func;
 }
 //注册函数
@@ -33,10 +33,18 @@ Usart_Instance_t *UsartRegister(Usart_Instance_t *init_usart)
 {
 	if(init_usart == NULL)
 		return NULL;
-	
-	while(HAL_UARTEx_ReceiveToIdle_DMA(init_usart->usart_handle, init_usart->rx_buff, init_usart->rx_buf_size) != HAL_OK)
+	if (idx >= DEVICE_USART_CNT)
+		return NULL;
+
+	uint8_t start_retry = 5;
+	while((start_retry > 0U) && (HAL_UARTEx_ReceiveToIdle_DMA(init_usart->usart_handle, init_usart->rx_buff, init_usart->rx_buf_size) != HAL_OK))
 	{
 		__HAL_UNLOCK(init_usart->usart_handle);
+		start_retry--;
+	}
+	if (start_retry == 0U)
+	{
+		return NULL;
 	}
     // 关闭dma half transfer中断防止两次进入HAL_UARTEx_RxEventCallback()
     // 这是HAL库的一个设计失误,发生DMA传输完成/半完成以及串口IDLE中断都会触发HAL_UARTEx_RxEventCallback()
@@ -66,17 +74,18 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
             if (usart_instance[i]->callback_func != NULL)
             {
                 usart_instance[i]->callback_func();
-                memset(usart_instance[i]->rx_buff, 0, Size); // 接收结束后清空buffer,对于变长数据是必要的
+                uint16_t clear_len = (Size > usart_instance[i]->rx_buf_size) ? usart_instance[i]->rx_buf_size : Size;
+                memset(usart_instance[i]->rx_buff, 0, clear_len); // 接收结束后清空buffer,对于变长数据是必要的
             }
 			if(usart_instance[i]->rx_mode == USART_RX_DMA)
 			{
-				while(HAL_UARTEx_ReceiveToIdle_DMA(usart_instance[i]->usart_handle, usart_instance[i]->rx_buff, usart_instance[i]->rx_buf_size) != HAL_OK)
+				if(HAL_UARTEx_ReceiveToIdle_DMA(usart_instance[i]->usart_handle, usart_instance[i]->rx_buff, usart_instance[i]->rx_buf_size) != HAL_OK)
 				{
 					__HAL_UNLOCK(huart);
 				}
 			}else if(usart_instance[i]->rx_mode == USART_RX_IT)
 			{
-				while(HAL_UARTEx_ReceiveToIdle_IT(usart_instance[i]->usart_handle, usart_instance[i]->rx_buff, usart_instance[i]->rx_buf_size) != HAL_OK)
+				if(HAL_UARTEx_ReceiveToIdle_IT(usart_instance[i]->usart_handle, usart_instance[i]->rx_buff, usart_instance[i]->rx_buf_size) != HAL_OK)
 				{
 					__HAL_UNLOCK(huart);
 				}

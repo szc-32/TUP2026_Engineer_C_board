@@ -4,6 +4,8 @@
 #include "cmsis_os.h"
 #include "cstring"
 #include "referee_data.h"
+
+static_assert(sizeof(extVisionRecvData_t) <= VISION_LEN_PACKED, "extVisionRecvData_t exceeds packed frame length");
 //虚拟串口USB需优化
 extVisionSendHeader_t    VisionSendHeader;  //头
 extVisionRecvData_t      VisionRecvData;    //视觉接收结构体
@@ -42,6 +44,11 @@ typedef union
 
 void VisionReadData(uint8_t *ReadFromUsart)
 {
+	if (ReadFromUsart == NULL)
+	{
+		return;
+	}
+
 	//判断帧头数据是否为0xA5
 	if(ReadFromUsart[0] == 0xA5)
 	{
@@ -52,7 +59,7 @@ void VisionReadData(uint8_t *ReadFromUsart)
 			if(Verify_CRC16_Check_Sum( ReadFromUsart, VISION_LEN_PACKED ) == true)
 			{
 				//接收数据拷贝
-				memcpy(&vision_info.RxPacket, ReadFromUsart, VISION_LEN_PACKED);	
+				memcpy(&vision_info.RxPacket, ReadFromUsart, sizeof(extVisionRecvData_t));	
 				if(vision_info.RxPacket.yaw_angle >=25 || vision_info.RxPacket.yaw_angle <=-25)
 				{
 					vision_info.State.rx_data_update = false;
@@ -68,7 +75,7 @@ void VisionReadData(uint8_t *ReadFromUsart)
 	}
 	if(vision_info.RxPacket.yaw_angle == 99.99f)
 	{
-		memset(&vision_info.RxPacket, 0, 100);
+		memset(&vision_info.RxPacket, 0, sizeof(extVisionRecvData_t));
 	} 
 }
 

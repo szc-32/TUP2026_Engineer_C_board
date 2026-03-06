@@ -130,6 +130,7 @@ bool Judge_Read_Data(uint8_t *ReadFromUsart)
 			{
 				retval_tf = TRUE;//都校验过了则说明数据可用
 				CmdID = (ReadFromUsart[6] << 8 | ReadFromUsart[5]);
+				uint16_t data_len = FrameHeader.DataLength;
 				//解析数据命令码,将数据拷贝到相应结构体中(注意拷贝数据的长度)
 			
 				switch(CmdID)
@@ -231,9 +232,12 @@ bool Judge_Read_Data(uint8_t *ReadFromUsart)
 					break;
 					
 					case ID_customize_controller_interaction_data_interface:
-						RefereeTryFeedMasterRaw12AS5600L((ReadFromUsart + DATA), ReadFromUsart[DATA_LENGTH]);
-						memcpy(&robot_interactive_data, (ReadFromUsart + DATA), sizeof(ext_robot_interactive_data_t));
-						g_custom_controller_updated = TRUE;
+						RefereeTryFeedMasterRaw12AS5600L((ReadFromUsart + DATA), data_len);
+						if (data_len >= (uint16_t)sizeof(ext_robot_interactive_data_t))
+						{
+							memcpy(&robot_interactive_data, (ReadFromUsart + DATA), sizeof(ext_robot_interactive_data_t));
+							g_custom_controller_updated = TRUE;
+						}
 					break;
 
 					case ID_minimap_interactive_data:  //0x0303
@@ -303,20 +307,29 @@ bool Judge_Read_Remotor_Data(uint8_t *ReadFormUsart1)
 		   {
 			   //retval_tf = TRUE;//都校验过了则说明数据可用
 			   CmdID = (ReadFormUsart1[6+i] << 8 | ReadFormUsart1[5+i]);
+			   uint16_t data_len = ReadFormUsart1[DATA_LENGTH + i];
 			   //解析数据命令码,将数据拷贝到相应结构体中(注意拷贝数据的长度)
 		   
 			   switch(CmdID)
 			   {
 			   
 				   case 0x304:  //0x0303
-					   memcpy(&Transfer_image_robot_command, (ReadFormUsart1+i + DATA), 12);
-					 return 1;
+					   if (data_len >= 12U)
+					   {
+						   memcpy(&Transfer_image_robot_command, (ReadFormUsart1+i + DATA), 12);
+						   return 1;
+					   }
+					   break;
 				   
 				   case 0x302:  //0x0303
-					   RefereeTryFeedMasterRaw12AS5600L((ReadFormUsart1+i + DATA), ReadFormUsart1[DATA_LENGTH + i]);
-					   memcpy(&robot_interactive_data, (ReadFormUsart1+i + DATA), sizeof(ext_robot_interactive_data_t));
-					   g_custom_controller_updated = TRUE;
-					 return 1;
+					   RefereeTryFeedMasterRaw12AS5600L((ReadFormUsart1+i + DATA), data_len);
+					   if (data_len >= (uint16_t)sizeof(ext_robot_interactive_data_t))
+					   {
+						   memcpy(&robot_interactive_data, (ReadFormUsart1+i + DATA), sizeof(ext_robot_interactive_data_t));
+						   g_custom_controller_updated = TRUE;
+						   return 1;
+					   }
+					   break;
 				   
 			   }
 			   
