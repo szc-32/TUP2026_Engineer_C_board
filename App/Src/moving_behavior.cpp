@@ -13,6 +13,19 @@
 #define DM_ARM_CUSTOM_ROT_DEADZONE        0.02f
 #define DM_ARM_CUSTOM_INPUT_LPF_ALPHA     0.25f
 
+// 遥控器六轴模式映射参数
+#define DM_ARM_RC_STICK_DEADZONE           20.0f
+#define DM_ARM_RC_X_GAIN                   0.0008f
+#define DM_ARM_RC_Y_GAIN                   0.0008f
+#define DM_ARM_RC_Z_GAIN                   0.0008f
+#define DM_ARM_RC_PITCH_GAIN               0.00001f
+#define DM_ARM_RC_ROLL_GAIN                0.00001f
+#define DM_ARM_RC_J4_GAIN                  0.00001f
+#define DM_ARM_TARGET_PITCH_MIN           -1.57f
+#define DM_ARM_TARGET_PITCH_MAX            1.57f
+#define DM_ARM_TARGET_ROLL_MIN            -1.57f
+#define DM_ARM_TARGET_ROLL_MAX             1.57f
+
 // 目标位姿软限幅（机械臂基坐标系）
 #define DM_ARM_TARGET_X_MIN              -1.20f
 #define DM_ARM_TARGET_X_MAX               1.20f
@@ -51,6 +64,10 @@ static fp32 g_dm_gyro_cali_scale[3] = {1.0f, 1.0f, 1.0f};
 static fp32 g_dm_gyro_cali_offset[3] = {0.0f, 0.0f, 0.0f};
 static fp32 g_dm_custom_pos_lpf[3] = {0.0f, 0.0f, 0.0f};
 static fp32 g_dm_custom_rot_lpf[3] = {0.0f, 0.0f, 0.0f};
+static bool_t g_dm_seed_q_inited = FALSE;
+static fp32 g_dm_seed_q[ARM_DOF] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+static fp32 g_dm_joint_q_min[ARM_DOF] = {-3.2f, -3.2f, -3.2f, -3.2f, -3.2f, -3.2f};
+static fp32 g_dm_joint_q_max[ARM_DOF] = {3.2f, 3.2f, 3.2f, 3.2f, 3.2f, 3.2f};
 static forward_kinematics_t g_master_fk_solver;
 static bool_t g_master_fk_inited = FALSE;
 static bool_t g_master_fk_data_valid = FALSE;
@@ -68,6 +85,7 @@ static fp32 DMArmLowPass(fp32 prev, fp32 input, fp32 alpha);
 static fp32 DMArmClampStep(fp32 delta, fp32 step_max);
 static void DMArmClampTargetPose(ArmPose_t *pose);
 static void DMArmApplyTargetSlew(const ArmPose_t *prev_pose, ArmPose_t *target_pose);
+static void DMArmEnsureSeedQInit(void);
 
 // 维持持续鸣叫（等效于 BuzzerWarn(0, 0, psc, 10000)）
 static void CalibrateBeepKeepOn(void)
@@ -405,6 +423,37 @@ static void DMArmApplyTargetSlew(const ArmPose_t *prev_pose, ArmPose_t *target_p
 	target_pose->yaw = prev_pose->yaw + DMArmClampStep(target_pose->yaw - prev_pose->yaw, DM_ARM_SLEW_YAW_STEP_MAX);
 }
 
+static void DMArmEnsureSeedQInit(void)
+{
+	if (g_dm_seed_q_inited == TRUE)
+	{
+		return;
+	}
+
+	const fp32 *home_q = ArmGetHomeQ();
+	for (uint8_t i = 0; i < ARM_DOF; i++)
+	{
+		g_dm_seed_q[i] = home_q[i];
+	}
+
+	ArmKinematics6D *solver = ArmGetSolver();
+	if (solver != 0)
+	{
+		solver->GetJointLimit(g_dm_joint_q_min, g_dm_joint_q_max);
+	}
+
+	if (ArmControlGetJointFeedbackQ(g_dm_seed_q) == FALSE)
+	{
+		for (uint8_t i = 0; i < ARM_DOF; i++)
+		{
+			g_dm_seed_q[i] = DMArmClampValue(g_dm_seed_q[i], g_dm_joint_q_min[i], g_dm_joint_q_max[i]);
+		}
+	}
+
+	ArmControlSetSeedQ(g_dm_seed_q);
+	g_dm_seed_q_inited = TRUE;
+}
+
 static void DMArmSetInitPoseWithJointLimit(void)
 {
 	if (g_dm_arm_init_pose_inited == TRUE)
@@ -502,33 +551,73 @@ static void DMArmUpdateTargetFromInput(void)
 	const fp32 custom_rot_gain = DM_ARM_CUSTOM_ROT_GAIN;
 	ext_robot_interactive_data_t custom_ctrl_data;
 	ArmPose_t prev_target_pose;
+	const bool_t rc_xyz_mode =
+		switch_is_up(rc_ctrl.rc.s[1]) && switch_is_down(rc_ctrl.rc.s[0]);
+	const bool_t rc_rot_mode =
+		switch_is_up(rc_ctrl.rc.s[1]) && switch_is_mid(rc_ctrl.rc.s[0]);
+	const bool_t rc_dual_mode = (rc_xyz_mode == TRUE) || (rc_rot_mode == TRUE);
+	bool_t pose_attitude_control = FALSE;
 
 	DMArmEnsureTargetInit();
 	g_dm_arm_custom_input_active = FALSE;
 	prev_target_pose = g_dm_arm_target_pose;
 
-	if (IF_KEY_PRESSED_Z)
+	if (rc_dual_mode == FALSE)
 	{
-		g_dm_arm_target_pose.x += pose_xy_gain;
-	}
-	if (IF_KEY_PRESSED_X)
-	{
-		g_dm_arm_target_pose.x -= pose_xy_gain;
-	}
-	if (IF_KEY_PRESSED_R)
-	{
-		g_dm_arm_target_pose.y += pose_xy_gain;
-	}
-	if (IF_KEY_PRESSED_F)
-	{
-		g_dm_arm_target_pose.y -= pose_xy_gain;
+		if (IF_KEY_PRESSED_Z)
+		{
+			g_dm_arm_target_pose.x += pose_xy_gain;
+		}
+		if (IF_KEY_PRESSED_X)
+		{
+			g_dm_arm_target_pose.x -= pose_xy_gain;
+		}
+		if (IF_KEY_PRESSED_R)
+		{
+			g_dm_arm_target_pose.y += pose_xy_gain;
+		}
+		if (IF_KEY_PRESSED_F)
+		{
+			g_dm_arm_target_pose.y -= pose_xy_gain;
+		}
+
+		g_dm_arm_target_pose.z += (fp32)rc_ctrl.rc.ch[4] * pose_z_gain;
+		g_dm_arm_target_pose.yaw += (fp32)rc_ctrl.mouse.x * pose_yaw_gain;
+		DMArmLegacyEndApplyDelta(-(fp32)rc_ctrl.mouse.y * pose_pitch_gain, 0.0f);
 	}
 
-	g_dm_arm_target_pose.z += (fp32)rc_ctrl.rc.ch[4] * pose_z_gain;
-	g_dm_arm_target_pose.yaw += (fp32)rc_ctrl.mouse.x * pose_yaw_gain;
-	DMArmLegacyEndApplyDelta(-(fp32)rc_ctrl.mouse.y * pose_pitch_gain, 0.0f);
+	if (rc_xyz_mode == TRUE)
+	{
+		const fp32 rc_r_ud = DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[1], DM_ARM_RC_STICK_DEADZONE);
+		const fp32 rc_l_lr = DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[2], DM_ARM_RC_STICK_DEADZONE);
+		const fp32 rc_l_ud = DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[3], DM_ARM_RC_STICK_DEADZONE);
 
-	if (RefereePopCustomControllerData(&custom_ctrl_data) == TRUE)
+		g_dm_arm_target_pose.x += rc_r_ud * DM_ARM_RC_X_GAIN;
+		g_dm_arm_target_pose.y += rc_l_lr * DM_ARM_RC_Y_GAIN;
+		g_dm_arm_target_pose.z += rc_l_ud * DM_ARM_RC_Z_GAIN;
+		g_dm_arm_custom_input_active = TRUE;
+	}
+
+	if (rc_rot_mode == TRUE)
+	{
+		const fp32 rc_l_ud = DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[3], DM_ARM_RC_STICK_DEADZONE);
+		const fp32 rc_l_lr = DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[2], DM_ARM_RC_STICK_DEADZONE);
+		const fp32 rc_r_lr = DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[0], DM_ARM_RC_STICK_DEADZONE);
+
+		DMArmEnsureSeedQInit();
+		g_dm_arm_target_pose.pitch += rc_l_ud * DM_ARM_RC_PITCH_GAIN;
+		g_dm_arm_target_pose.roll += rc_l_lr * DM_ARM_RC_ROLL_GAIN;
+		g_dm_arm_target_pose.pitch = DMArmClampValue(g_dm_arm_target_pose.pitch, DM_ARM_TARGET_PITCH_MIN, DM_ARM_TARGET_PITCH_MAX);
+		g_dm_arm_target_pose.roll = DMArmClampValue(g_dm_arm_target_pose.roll, DM_ARM_TARGET_ROLL_MIN, DM_ARM_TARGET_ROLL_MAX);
+
+		g_dm_seed_q[3] += rc_r_lr * DM_ARM_RC_J4_GAIN;
+		g_dm_seed_q[3] = DMArmClampValue(g_dm_seed_q[3], g_dm_joint_q_min[3], g_dm_joint_q_max[3]);
+		ArmControlSetSeedQ(g_dm_seed_q);
+		pose_attitude_control = TRUE;
+		g_dm_arm_custom_input_active = TRUE;
+	}
+
+	if ((rc_dual_mode == FALSE) && (RefereePopCustomControllerData(&custom_ctrl_data) == TRUE))
 	{
 		// 自定义控制器按机械臂基坐标系“增量指令”解释。
 		fp32 x_in = DMArmApplyDeadzone(custom_ctrl_data.x_dis, DM_ARM_CUSTOM_POS_DEADZONE);
@@ -553,7 +642,7 @@ static void DMArmUpdateTargetFromInput(void)
 			g_dm_custom_rot_lpf[2] * custom_rot_gain);
 		g_dm_arm_custom_input_active = TRUE;
 	}
-	else
+	else if (rc_dual_mode == FALSE)
 	{
 		// 无新数据时缓慢回零，避免滤波残留导致持续漂移。
 		for (uint8_t i = 0; i < 3; i++)
@@ -563,8 +652,11 @@ static void DMArmUpdateTargetFromInput(void)
 		}
 	}
 
-	g_dm_arm_target_pose.pitch = g_dm_arm_locked_pitch;
-	g_dm_arm_target_pose.roll = g_dm_arm_locked_roll;
+	if (pose_attitude_control == FALSE)
+	{
+		g_dm_arm_target_pose.pitch = g_dm_arm_locked_pitch;
+		g_dm_arm_target_pose.roll = g_dm_arm_locked_roll;
+	}
 	DMArmClampTargetPose(&g_dm_arm_target_pose);
 	DMArmApplyTargetSlew(&prev_target_pose, &g_dm_arm_target_pose);
 
@@ -643,6 +735,7 @@ void moving_t::OnBehaviorModeChange()
 {
 	ResetBehaviorSteps();
 	ClearDMArmHold();
+	g_dm_seed_q_inited = FALSE;
 	g_dm_arm_init_pose_inited = FALSE;
 	g_dm_arm_home_stable_count = 0;
 	g_dm_gyro_cali_count = 0;
@@ -899,6 +992,14 @@ bool_t moving_t::DMArmHasInputCommand()
 
 	if ((rc_ctrl.mouse.x > 8) || (rc_ctrl.mouse.x < -8) ||
 		(rc_ctrl.mouse.y > 8) || (rc_ctrl.mouse.y < -8))
+	{
+		return TRUE;
+	}
+
+	if ((rc_ctrl.rc.ch[0] > 80) || (rc_ctrl.rc.ch[0] < -80) ||
+		(rc_ctrl.rc.ch[1] > 80) || (rc_ctrl.rc.ch[1] < -80) ||
+		(rc_ctrl.rc.ch[2] > 80) || (rc_ctrl.rc.ch[2] < -80) ||
+		(rc_ctrl.rc.ch[3] > 80) || (rc_ctrl.rc.ch[3] < -80))
 	{
 		return TRUE;
 	}

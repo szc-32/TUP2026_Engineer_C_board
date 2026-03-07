@@ -214,36 +214,35 @@ void system_t::RobotModeSet()
 		/**********工程模式设置**********/
 		if (switch_is_mid(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_down(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
 		{
-			//左中右下 小陀螺模式
-			sys_pub.mode = SPIN;
-			sys_pub.engineer_mode = KEYBOARD;
+			//左中右下 自定义控制器模式
+			sys_pub.mode = RELATIVE_ANGLE;
+			sys_pub.engineer_mode = USER;
 		}
 		else if (switch_is_mid(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_mid(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
 		{
-			//左中右中 六轴机械臂控制模式
-			sys_pub.mode = NORMAL;
+			//左中右中 小陀螺模式
+			sys_pub.mode = SPIN;
 			sys_pub.engineer_mode = KEYBOARD;
 		}
-		// else if (switch_is_mid(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_up(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
-		// {
-		// 	//左中右上 机械臂控制模式
-		// 	sys_pub.mode = NORMAL;
-		// 	sys_pub.engineer_mode = SUCTION_CUP;
-
-		// }
-
-		if (switch_is_up(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_down(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
+		else if (switch_is_mid(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_up(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
 		{
-			//左上右下 六轴机械臂归位模式（回初始化位置）
+			//左中右上 六轴机械臂归位模式
 			sys_pub.mode = NORMAL;
 			sys_pub.engineer_mode = INIT;
 		}
-		// else if (switch_is_up(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_mid(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
-		// {
-		// 	//左上右中 动作组测试模式
-		// 	sys_pub.mode = NORMAL;
-		// 	sys_pub.engineer_mode = TEST;
-		// }
+
+		if (switch_is_up(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_down(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
+		{
+			//左上右下 六轴机械臂平移控制模式（末端XYZ）
+			sys_pub.mode = NORMAL;
+			sys_pub.engineer_mode = KEYBOARD;
+		}
+		else if (switch_is_up(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_mid(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
+		{
+			//左上右中 六轴机械臂转动控制模式（末端pitch/roll + J4）
+			sys_pub.mode = NORMAL;
+			sys_pub.engineer_mode = KEYBOARD;
+		}
 		else if (switch_is_up(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_up(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
 		{
 			//左上右上 键盘控制模式
@@ -251,18 +250,18 @@ void system_t::RobotModeSet()
 			sys_pub.engineer_mode = KEYBOARD;
 		}
 
-		/**********小陀螺模式设置**********/
-		if(sys_pub.key_flag.spin_flag && sys_pub.engineer_mode != USER)
-		{
-			if(sys_pub.mode == NORMAL || sys_pub.mode == RELATIVE_ANGLE)
-			{
-				sys_pub.mode = SPIN;
-			}
-			else if(sys_pub.mode == AUTO)
-			{
-				sys_pub.mode = SPIN_AUTO;
-			}
-		}
+		/**********小陀螺模式设置（调试阶段禁用）**********/
+		// if(sys_pub.key_flag.spin_flag && sys_pub.engineer_mode != USER)
+		// {
+		// 	if(sys_pub.mode == NORMAL || sys_pub.mode == RELATIVE_ANGLE)
+		// 	{
+		// 		sys_pub.mode = SPIN;
+		// 	}
+		// 	else if(sys_pub.mode == AUTO)
+		// 	{
+		// 		sys_pub.mode = SPIN_AUTO;
+		// 	}
+		// }
 
 		/**********模式切换判断（最终模式）**********/
 		if(last_mode != sys_pub.mode)
