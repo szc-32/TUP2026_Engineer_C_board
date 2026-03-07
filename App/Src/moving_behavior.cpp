@@ -64,10 +64,6 @@ static fp32 g_dm_gyro_cali_scale[3] = {1.0f, 1.0f, 1.0f};
 static fp32 g_dm_gyro_cali_offset[3] = {0.0f, 0.0f, 0.0f};
 static fp32 g_dm_custom_pos_lpf[3] = {0.0f, 0.0f, 0.0f};
 static fp32 g_dm_custom_rot_lpf[3] = {0.0f, 0.0f, 0.0f};
-static bool_t g_dm_seed_q_inited = FALSE;
-static fp32 g_dm_seed_q[ARM_DOF] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-static fp32 g_dm_joint_q_min[ARM_DOF] = {-3.2f, -3.2f, -3.2f, -3.2f, -3.2f, -3.2f};
-static fp32 g_dm_joint_q_max[ARM_DOF] = {3.2f, 3.2f, 3.2f, 3.2f, 3.2f, 3.2f};
 static forward_kinematics_t g_master_fk_solver;
 static bool_t g_master_fk_inited = FALSE;
 static bool_t g_master_fk_data_valid = FALSE;
@@ -85,7 +81,6 @@ static fp32 DMArmLowPass(fp32 prev, fp32 input, fp32 alpha);
 static fp32 DMArmClampStep(fp32 delta, fp32 step_max);
 static void DMArmClampTargetPose(ArmPose_t *pose);
 static void DMArmApplyTargetSlew(const ArmPose_t *prev_pose, ArmPose_t *target_pose);
-static void DMArmEnsureSeedQInit(void);
 
 // 维持持续鸣叫（等效于 BuzzerWarn(0, 0, psc, 10000)）
 static void CalibrateBeepKeepOn(void)
@@ -129,13 +124,16 @@ static void CalibrateBeepUpdate(void)
 }
 
 static bool_t g_legacy_end_axis_inited = FALSE;
+static bool_t g_legacy_j4_axis_inited = FALSE;
 // 旧末端轴通道：将控制器 pitch/roll 增量映射到旧版 pitch/roll 电机。
 static const fp32 g_legacy_end_cmd_gain = DM_ARM_CUSTOM_END_AXIS_GAIN;
 static const fp32 g_legacy_pitch_range_deg = 180.0f;
 static const fp32 g_legacy_roll_range_deg = 360.0f;
+static const fp32 g_legacy_j4_range_deg = 360.0f;
 static const fp32 g_legacy_deg_to_rad = 0.01745329252f;
 static fp32 g_legacy_pitch_center_ecd = 0.0f;
 static fp32 g_legacy_roll_center_ecd = 0.0f;
+static fp32 g_legacy_j4_center_ecd = 0.0f;
 
 static fp32 DMArmLegacyDegToEcd(fp32 degree)
 {
@@ -196,6 +194,41 @@ static void DMArmLegacyEndUpdateFromLatestCustom(void)
 		DMArmLegacyEndApplyDelta(custom_ctrl_data.pitch_rad * g_legacy_end_cmd_gain,
 			custom_ctrl_data.roll_rad * g_legacy_end_cmd_gain);
 	}
+}
+
+static void DMArmLegacyJ4EnsureInit(void)
+{
+	if (g_legacy_j4_axis_inited == TRUE)
+	{
+		return;
+	}
+
+	moving_t *mv = MovingPointer();
+	if (mv == 0)
+	{
+		return;
+	}
+
+	mv->yaw_b_motor.motor_angle_set = mv->yaw_b_motor.motor_angle;
+	g_legacy_j4_center_ecd = mv->yaw_b_motor.motor_angle;
+	g_legacy_j4_axis_inited = TRUE;
+}
+
+static void DMArmLegacyJ4ApplyDelta(fp32 j4_delta_rad)
+{
+	moving_t *mv = MovingPointer();
+	if (mv == 0)
+	{
+		return;
+	}
+
+	DMArmLegacyJ4EnsureInit();
+	const fp32 j4_half_range_ecd = 0.5f * DMArmLegacyDegToEcd(g_legacy_j4_range_deg);
+
+	mv->yaw_b_motor.motor_angle_set += j4_delta_rad / MOTOR_ECD_TO_RAD;
+	mv->yaw_b_motor.motor_angle_set = DMArmClampValue(mv->yaw_b_motor.motor_angle_set,
+		g_legacy_j4_center_ecd - j4_half_range_ecd,
+		g_legacy_j4_center_ecd + j4_half_range_ecd);
 }
 
 void DMArmMasterFKLoadDefaultTemplate(void)
@@ -423,37 +456,6 @@ static void DMArmApplyTargetSlew(const ArmPose_t *prev_pose, ArmPose_t *target_p
 	target_pose->yaw = prev_pose->yaw + DMArmClampStep(target_pose->yaw - prev_pose->yaw, DM_ARM_SLEW_YAW_STEP_MAX);
 }
 
-static void DMArmEnsureSeedQInit(void)
-{
-	if (g_dm_seed_q_inited == TRUE)
-	{
-		return;
-	}
-
-	const fp32 *home_q = ArmGetHomeQ();
-	for (uint8_t i = 0; i < ARM_DOF; i++)
-	{
-		g_dm_seed_q[i] = home_q[i];
-	}
-
-	ArmKinematics6D *solver = ArmGetSolver();
-	if (solver != 0)
-	{
-		solver->GetJointLimit(g_dm_joint_q_min, g_dm_joint_q_max);
-	}
-
-	if (ArmControlGetJointFeedbackQ(g_dm_seed_q) == FALSE)
-	{
-		for (uint8_t i = 0; i < ARM_DOF; i++)
-		{
-			g_dm_seed_q[i] = DMArmClampValue(g_dm_seed_q[i], g_dm_joint_q_min[i], g_dm_joint_q_max[i]);
-		}
-	}
-
-	ArmControlSetSeedQ(g_dm_seed_q);
-	g_dm_seed_q_inited = TRUE;
-}
-
 static void DMArmSetInitPoseWithJointLimit(void)
 {
 	if (g_dm_arm_init_pose_inited == TRUE)
@@ -544,7 +546,6 @@ static void DMArmEnsureTargetInit(void)
 static void DMArmUpdateTargetFromInput(void)
 {
 	const fp32 pose_xy_gain = 0.0008f;
-	const fp32 pose_z_gain = 0.0006f;
 	const fp32 pose_yaw_gain = 0.00012f;
 	const fp32 pose_pitch_gain = 0.0001f;
 	const fp32 custom_pos_gain = DM_ARM_CUSTOM_POS_GAIN;
@@ -581,7 +582,6 @@ static void DMArmUpdateTargetFromInput(void)
 			g_dm_arm_target_pose.y -= pose_xy_gain;
 		}
 
-		g_dm_arm_target_pose.z += (fp32)rc_ctrl.rc.ch[4] * pose_z_gain;
 		g_dm_arm_target_pose.yaw += (fp32)rc_ctrl.mouse.x * pose_yaw_gain;
 		DMArmLegacyEndApplyDelta(-(fp32)rc_ctrl.mouse.y * pose_pitch_gain, 0.0f);
 	}
@@ -604,15 +604,12 @@ static void DMArmUpdateTargetFromInput(void)
 		const fp32 rc_l_lr = DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[2], DM_ARM_RC_STICK_DEADZONE);
 		const fp32 rc_r_lr = DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[0], DM_ARM_RC_STICK_DEADZONE);
 
-		DMArmEnsureSeedQInit();
 		g_dm_arm_target_pose.pitch += rc_l_ud * DM_ARM_RC_PITCH_GAIN;
 		g_dm_arm_target_pose.roll += rc_l_lr * DM_ARM_RC_ROLL_GAIN;
 		g_dm_arm_target_pose.pitch = DMArmClampValue(g_dm_arm_target_pose.pitch, DM_ARM_TARGET_PITCH_MIN, DM_ARM_TARGET_PITCH_MAX);
 		g_dm_arm_target_pose.roll = DMArmClampValue(g_dm_arm_target_pose.roll, DM_ARM_TARGET_ROLL_MIN, DM_ARM_TARGET_ROLL_MAX);
-
-		g_dm_seed_q[3] += rc_r_lr * DM_ARM_RC_J4_GAIN;
-		g_dm_seed_q[3] = DMArmClampValue(g_dm_seed_q[3], g_dm_joint_q_min[3], g_dm_joint_q_max[3]);
-		ArmControlSetSeedQ(g_dm_seed_q);
+		// J4改为GM6020后，右摇杆左右直接驱动旧 yaw_b 轴目标。
+		DMArmLegacyJ4ApplyDelta(rc_r_lr * DM_ARM_RC_J4_GAIN);
 		pose_attitude_control = TRUE;
 		g_dm_arm_custom_input_active = TRUE;
 	}
@@ -735,7 +732,7 @@ void moving_t::OnBehaviorModeChange()
 {
 	ResetBehaviorSteps();
 	ClearDMArmHold();
-	g_dm_seed_q_inited = FALSE;
+	g_legacy_j4_axis_inited = FALSE;
 	g_dm_arm_init_pose_inited = FALSE;
 	g_dm_arm_home_stable_count = 0;
 	g_dm_gyro_cali_count = 0;
@@ -1000,11 +997,6 @@ bool_t moving_t::DMArmHasInputCommand()
 		(rc_ctrl.rc.ch[1] > 80) || (rc_ctrl.rc.ch[1] < -80) ||
 		(rc_ctrl.rc.ch[2] > 80) || (rc_ctrl.rc.ch[2] < -80) ||
 		(rc_ctrl.rc.ch[3] > 80) || (rc_ctrl.rc.ch[3] < -80))
-	{
-		return TRUE;
-	}
-
-	if ((rc_ctrl.rc.ch[4] > 80) || (rc_ctrl.rc.ch[4] < -80))
 	{
 		return TRUE;
 	}

@@ -280,38 +280,39 @@ void system_t::RobotModeSet()
 void system_t::ThumbWheelModeSet()
 {
 	/*****下半边拨轮的状态使用*****/
-	//用于拨盘模式设置
-	if(sys_pub.stir_mode == ALLOW_MOVE) //拨轮设置为此种模式下才可进行模式设置
-	{
-		//遥控器射击的设置（使用正半边——往下拨动）
-		ThumbWheelSet(POSITIVE_DIRECTION,&postive_thumb_wheel_state);
-		if(postive_thumb_wheel_state)
-			postive_thumb_wheel_state_time++;
-	}
-	
-	//200<拨动时间<1500：松掉回中后则为单发模式;波动时间>1500：则为连发模式
-	if(postive_thumb_wheel_state_time>200 && debug_shoot_mode_set)
-	{
-		if(postive_thumb_wheel_state_time >= 1500)
-		{
-			debug_shoot_flag = 3;
-			if(IF_THUMB_WHEEL_ZERO_STATE) //拨杆值回中
-			{
-				debug_shoot_flag = 0;
-				postive_thumb_wheel_state_time = 0;
-			}
-		}else
-		{
-			if(IF_THUMB_WHEEL_ZERO_STATE)  //拨杆值回中 //IF_THUMB_WHEEL_ZERO_STATE需要改试试
-			{
-				debug_shoot_flag = 1;
-				postive_thumb_wheel_state_time = 0;
-			}
-		}
-	}else
-	{
-		debug_shoot_flag = 0;
-	}
+	//用于拨盘模式设置（调试期：注释掉拨轮射击控制）
+	// if(sys_pub.stir_mode == ALLOW_MOVE) //拨轮设置为此种模式下才可进行模式设置
+	// {
+	// 	//遥控器射击的设置（使用正半边——往下拨动）
+	// 	ThumbWheelSet(POSITIVE_DIRECTION,&postive_thumb_wheel_state);
+	// 	if(postive_thumb_wheel_state)
+	// 		postive_thumb_wheel_state_time++;
+	// }
+
+	// //200<拨动时间<1500：松掉回中后则为单发模式;波动时间>1500：则为连发模式
+	// if(postive_thumb_wheel_state_time>200 && debug_shoot_mode_set)
+	// {
+	// 	if(postive_thumb_wheel_state_time >= 1500)
+	// 	{
+	// 		debug_shoot_flag = 3;
+	// 		if(IF_THUMB_WHEEL_ZERO_STATE) //拨杆值回中
+	// 		{
+	// 			debug_shoot_flag = 0;
+	// 			postive_thumb_wheel_state_time = 0;
+	// 		}
+	// 	}else
+	// 	{
+	// 		if(IF_THUMB_WHEEL_ZERO_STATE)  //拨杆值回中 //IF_THUMB_WHEEL_ZERO_STATE需要改试试
+	// 		{
+	// 			debug_shoot_flag = 1;
+	// 			postive_thumb_wheel_state_time = 0;
+	// 		}
+	// 	}
+	// }else
+	// {
+	// 	debug_shoot_flag = 0;
+	// }
+	debug_shoot_flag = 0;
 	
 	/*****上半边拨轮的状态使用*****/
 	//用于自瞄设置
@@ -325,10 +326,11 @@ void system_t::ThumbWheelModeSet()
 		negative_thumb_wheel_state_time = 0;
 	}
 	
-	if(system_rc_ctrl->rc.ch[4]> 300)
-		sys_pub.key_flag.super_cap_flag = 1;
-	else
-		sys_pub.key_flag.super_cap_flag = 0;
+	// 调试期：注释掉拨轮控制超级电容。
+	// if(system_rc_ctrl->rc.ch[4]> 300)
+	// 	sys_pub.key_flag.super_cap_flag = 1;
+	// else
+	// 	sys_pub.key_flag.super_cap_flag = 0;
 }
 
 /**

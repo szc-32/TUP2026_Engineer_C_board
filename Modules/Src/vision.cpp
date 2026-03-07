@@ -5,7 +5,7 @@
 #include "cstring"
 #include "referee_data.h"
 
-static_assert(sizeof(extVisionRecvData_t) <= VISION_LEN_PACKED, "extVisionRecvData_t exceeds packed frame length");
+typedef char vision_recv_data_size_check[(sizeof(extVisionRecvData_t) <= VISION_LEN_PACKED) ? 1 : -1];
 //虚拟串口USB需优化
 extVisionSendHeader_t    VisionSendHeader;  //头
 extVisionRecvData_t      VisionRecvData;    //视觉接收结构体
