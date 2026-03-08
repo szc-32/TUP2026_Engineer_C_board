@@ -143,7 +143,6 @@
         <SetRegEntry>
           <Number>0</Number>
           <Key>DLGUARM</Key>
-          <Name>d</Name>
         </SetRegEntry>
         <SetRegEntry>
           <Number>0</Number>
@@ -198,6 +197,41 @@
           <WinNumber>1</WinNumber>
           <ItemText>sys</ItemText>
         </Ww>
+        <Ww>
+          <count>7</count>
+          <WinNumber>1</WinNumber>
+          <ItemText>rc_ctrl</ItemText>
+        </Ww>
+        <Ww>
+          <count>8</count>
+          <WinNumber>1</WinNumber>
+          <ItemText>rc_watch</ItemText>
+        </Ww>
+        <Ww>
+          <count>9</count>
+          <WinNumber>1</WinNumber>
+          <ItemText>add_yaw,0x0A</ItemText>
+        </Ww>
+        <Ww>
+          <count>10</count>
+          <WinNumber>1</WinNumber>
+          <ItemText>sys</ItemText>
+        </Ww>
+        <Ww>
+          <count>11</count>
+          <WinNumber>1</WinNumber>
+          <ItemText>add_yaw</ItemText>
+        </Ww>
+        <Ww>
+          <count>12</count>
+          <WinNumber>1</WinNumber>
+          <ItemText>chassis.chassis_motor_info[1].speed</ItemText>
+        </Ww>
+        <Ww>
+          <count>13</count>
+          <WinNumber>1</WinNumber>
+          <ItemText>chassis.chassis_motor_info[0].speed</ItemText>
+        </Ww>
       </WatchWindow1>
       <WatchWindow2>
         <Ww>
@@ -209,6 +243,11 @@
           <count>1</count>
           <WinNumber>2</WinNumber>
           <ItemText>gimbal</ItemText>
+        </Ww>
+        <Ww>
+          <count>2</count>
+          <WinNumber>2</WinNumber>
+          <ItemText>speed_set[4]</ItemText>
         </Ww>
       </WatchWindow2>
       <MemoryWindow1>
@@ -1312,7 +1351,7 @@
 
   <Group>
     <GroupName>Modules</GroupName>
-    <tvExp>0</tvExp>
+    <tvExp>1</tvExp>
     <tvExpOptDlg>0</tvExpOptDlg>
     <cbSel>0</cbSel>
     <RteFlg>0</RteFlg>
@@ -1539,7 +1578,7 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>..\Modules\arm.cpp</PathWithFileName>
+      <PathWithFileName>..\App\Src\arm.cpp</PathWithFileName>
       <FilenameWithoutPath>arm.cpp</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
@@ -1551,7 +1590,7 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>..\Modules\photogate.cpp</PathWithFileName>
+      <PathWithFileName>..\App\Src\photogate.cpp</PathWithFileName>
       <FilenameWithoutPath>photogate.cpp</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
@@ -1628,7 +1667,7 @@
 
   <Group>
     <GroupName>App</GroupName>
-    <tvExp>0</tvExp>
+    <tvExp>1</tvExp>
     <tvExpOptDlg>0</tvExpOptDlg>
     <cbSel>0</cbSel>
     <RteFlg>0</RteFlg>
@@ -1819,6 +1858,18 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
+      <PathWithFileName>..\App\Src\gripper.cpp</PathWithFileName>
+      <FilenameWithoutPath>gripper.cpp</FilenameWithoutPath>
+      <RteFlg>0</RteFlg>
+      <bShared>0</bShared>
+    </File>
+    <File>
+      <GroupNumber>13</GroupNumber>
+      <FileNumber>122</FileNumber>
+      <FileType>8</FileType>
+      <tvExp>0</tvExp>
+      <tvExpOptDlg>0</tvExpOptDlg>
+      <bDave2>0</bDave2>
       <PathWithFileName>..\App\Src\moving_behavior.cpp</PathWithFileName>
       <FilenameWithoutPath>moving_behavior.cpp</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
@@ -1826,7 +1877,7 @@
     </File>
     <File>
       <GroupNumber>13</GroupNumber>
-      <FileNumber>122</FileNumber>
+      <FileNumber>123</FileNumber>
       <FileType>8</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -1838,13 +1889,25 @@
     </File>
     <File>
       <GroupNumber>13</GroupNumber>
-      <FileNumber>123</FileNumber>
+      <FileNumber>124</FileNumber>
       <FileType>5</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
       <PathWithFileName>..\App\Inc\forward_kinematics.h</PathWithFileName>
       <FilenameWithoutPath>forward_kinematics.h</FilenameWithoutPath>
+      <RteFlg>0</RteFlg>
+      <bShared>0</bShared>
+    </File>
+    <File>
+      <GroupNumber>13</GroupNumber>
+      <FileNumber>125</FileNumber>
+      <FileType>5</FileType>
+      <tvExp>0</tvExp>
+      <tvExpOptDlg>0</tvExpOptDlg>
+      <bDave2>0</bDave2>
+      <PathWithFileName>..\App\Inc\gripper.h</PathWithFileName>
+      <FilenameWithoutPath>gripper.h</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>
@@ -1858,7 +1921,7 @@
     <RteFlg>0</RteFlg>
     <File>
       <GroupNumber>14</GroupNumber>
-      <FileNumber>124</FileNumber>
+      <FileNumber>126</FileNumber>
       <FileType>8</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -1870,7 +1933,7 @@
     </File>
     <File>
       <GroupNumber>14</GroupNumber>
-      <FileNumber>125</FileNumber>
+      <FileNumber>127</FileNumber>
       <FileType>8</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -1882,7 +1945,7 @@
     </File>
     <File>
       <GroupNumber>14</GroupNumber>
-      <FileNumber>126</FileNumber>
+      <FileNumber>128</FileNumber>
       <FileType>8</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
@@ -1894,7 +1957,7 @@
     </File>
     <File>
       <GroupNumber>14</GroupNumber>
-      <FileNumber>127</FileNumber>
+      <FileNumber>129</FileNumber>
       <FileType>8</FileType>
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>

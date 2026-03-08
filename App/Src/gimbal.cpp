@@ -26,6 +26,13 @@
 //创建实例
 gimbal_t gimbal;
 
+// Fixed MIT target for gimbal yaw motor tuning.
+static const fp32 GIMBAL_YAW_MIT_POS_SET = 3.1f;
+static const fp32 GIMBAL_YAW_MIT_VEL_SET = 1.55f;
+static const fp32 GIMBAL_YAW_MIT_KP_SET = 20.0f;
+static const fp32 GIMBAL_YAW_MIT_KD_SET = 5.0f;
+static const fp32 GIMBAL_YAW_MIT_TOR_SET = 2.0f;
+
 /********电机初始化设置*********/
 DM_Motor_Setting_t yaw_setting = {0};
 Motor_Setting_t height_setting = {"height",ON_CAN2,5,M2006,POSITIVE_DIRECT,RATIO_1_TO_36,CASCADE_LOOP};
@@ -276,7 +283,8 @@ void GimbalTask()
 		case RELATIVE_ANGLE:
 		case NO_FOLLOW_YAW: 
 			BlinkLEDByCount(0xFF00FF00,500);
-			//不进行控制
+			gimbal.OperationInfoUpdate();
+			gimbal.RelativeControl();
 			break;
 	}
 
@@ -343,6 +351,10 @@ void gimbal_t::OperationInfoUpdate()
 	}else if(SysPointer()->mode == SPIN) //小陀螺模式
 	{
 		//add值更新，不进行限幅
+		add_yaw = SysPointer()->add_yaw;
+	}else if(SysPointer()->mode == RELATIVE_ANGLE || SysPointer()->mode == NO_FOLLOW_YAW)
+	{
+		// 相对角模式直接使用系统解算后的遥控增量。
 		add_yaw = SysPointer()->add_yaw;
 	}
 	
@@ -438,6 +450,7 @@ void gimbal_t::NormalControl()
 {
 	DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
 
+	yaw_dm->dm_ctrl_set.mode = mit_mode;
 	yaw_dm->dm_ctrl_set.pos_set = 0.0f;
 	yaw_dm->dm_ctrl_set.vel_set = 0.0f;
 	yaw_dm->dm_ctrl_set.kp_set = 0.0f;
@@ -481,6 +494,7 @@ void gimbal_t::RelativeControl()
 	
 	DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
 
+	yaw_dm->dm_ctrl_set.mode = mit_mode;
 	yaw_dm->dm_ctrl_set.pos_set = 0.0f;
 	yaw_dm->dm_ctrl_set.vel_set = 0.0f;
 	yaw_dm->dm_ctrl_set.kp_set = 0.0f;

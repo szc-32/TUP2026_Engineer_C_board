@@ -72,7 +72,7 @@ void LedMonitor();
   */
 void MonitorTask()
 {
-	MonitorMotor();
+	// MonitorMotor(); // Disable global motor alarm scan during chassis/gimbal-only debug.
 	LedMonitor();
 	BuzzerMonitor(&buzzer); //·äÃùÆ÷¼à²â
 }

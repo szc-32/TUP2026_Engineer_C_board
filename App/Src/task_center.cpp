@@ -37,7 +37,7 @@ void RobotInit()
 #endif
 	/****机器人各模块初始化****/
 	SysInit();
-	ArmControlTaskInit();
+	// ArmControlTaskInit(); // Disable arm init while debugging chassis + gimbal only.
 	GimbalInit();
 	ChassisInit();
 //	RevolverInit();
@@ -46,7 +46,7 @@ void RobotInit()
 	MonitorInit();
 	// Legacy calibrate module is disabled; keep only the new arm calibration pipeline.
 	// CaliInit();
-	GripperInit();
+	// GripperInit(); // Disable during chassis/gimbal-only debug.
 	
 	//初始化完成，开启中断
 	__enable_irq();
@@ -94,8 +94,8 @@ void MainTask(void const *pvParameters)                //主任务
 	{
 		//系统任务
 		SystemTask();
-		MovingPointer()->Get_info();
-		MovingPointer()->Get_set();
+		// MovingPointer()->Get_info(); // Disable arm behavior pipeline during chassis/gimbal-only debug.
+		// MovingPointer()->Get_set();  // Disable arm behavior pipeline during chassis/gimbal-only debug.
 //		TEST_FUNC_TIME(gimbal_test,GimbalTask());
 		//云台任务
 		GimbalTask();
@@ -103,10 +103,10 @@ void MainTask(void const *pvParameters)                //主任务
 		ChassisTask();
 		//拨盘任务
 		// RevolverTask();
-		LiftingTask();
-		SuctionCupTask();
-		GripperTask();
-		ArmControlTask();
+		// LiftingTask();   // Disable during chassis/gimbal-only debug.
+		// SuctionCupTask(); // Disable during chassis/gimbal-only debug.
+		// GripperTask();   // Disable during chassis/gimbal-only debug.
+		// ArmControlTask(); // Disable arm control loop while debugging chassis + gimbal only.
 
 		vTaskDelayUntil(&currentTime,1);
 	}

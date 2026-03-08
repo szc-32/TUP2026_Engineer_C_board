@@ -26,9 +26,52 @@
 #include "main.h"
 #include "system.h"
 #include "cmsis_os.h"
+#include "bsp_usart.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#define SYSTEM_DEBUG_PRINT_ENABLE 1
+#define SYSTEM_DEBUG_PRINT_PERIOD 100U
+// Arm calibrate behavior pipeline is disabled in current debug profile.
+// Keep this 0 to avoid entering CALIBRATE from RC gesture and freezing RC mode switch logic.
+#define SYSTEM_ARM_CALIBRATE_PIPELINE_ENABLE 0
 
 //系统实例
 system_t sys;
+
+static bool_t g_rc_online_debug = FALSE;
+
+static void SystemDebugPrint(void)
+{
+#if SYSTEM_DEBUG_PRINT_ENABLE
+	static uint16_t tick = 0;
+	char line[180];
+
+	if (++tick < SYSTEM_DEBUG_PRINT_PERIOD)
+	{
+		return;
+	}
+	tick = 0;
+
+	snprintf(line,
+			 sizeof(line),
+			 "[SYS] rc=%u mode=%u eng=%u s0=%d s1=%d ch0=%d ch1=%d ch2=%d ch3=%d add_yaw=%.5f add_pit=%.5f\\r\\n",
+			 (unsigned)g_rc_online_debug,
+			 (unsigned)sys.sys_pub.mode,
+			 (unsigned)sys.sys_pub.engineer_mode,
+			 (int)sys.system_rc_ctrl->rc.s[0],
+			 (int)sys.system_rc_ctrl->rc.s[1],
+			 (int)sys.system_rc_ctrl->rc.ch[0],
+			 (int)sys.system_rc_ctrl->rc.ch[1],
+			 (int)sys.system_rc_ctrl->rc.ch[2],
+			 (int)sys.system_rc_ctrl->rc.ch[3],
+			 (double)sys.sys_pub.add_yaw,
+			 (double)sys.sys_pub.add_pit);
+
+	USARTSend(&huart1, (uint8_t *)line, (uint16_t)strlen(line), USART_TRANSFER_BLOCKING);
+#endif
+}
 
 /**
 	* @brief          系统类构造函数
@@ -41,7 +84,7 @@ system_t::system_t()
 	sys_pub.mode = INIT_MODE;
 	sys_pub.fir_mode = FORBID_FIRE;
 	sys_pub.stir_mode = NO_MOVE;
-	sys_pub.engineer_mode = CALIBRATE;
+	sys_pub.engineer_mode = KEYBOARD;
 	sys_pub.arm_home_done = FALSE;
 	last_mode = sys_pub.mode;
 	/*****初始发弹模式设置*****/
@@ -79,6 +122,7 @@ void SystemTask()
 	sys.RobotModeSet();  //机器人模式设置
 	/*****操作量设置*****/
 	sys.CalControlQuantity();
+	SystemDebugPrint();
 }
 
 /**
@@ -88,7 +132,16 @@ void SystemTask()
   */
 void system_t::RobotModeSet()
 {
-	static bool_t boot_auto_calibrate_pending = TRUE;
+	static bool_t boot_auto_calibrate_pending = FALSE;
+
+#if !SYSTEM_ARM_CALIBRATE_PIPELINE_ENABLE
+	if (sys_pub.engineer_mode == CALIBRATE)
+	{
+		// Fallback: if CALIBRATE is reached while behavior pipeline is disabled,
+		// recover to manual mode so RC switch logic keeps working.
+		sys_pub.engineer_mode = KEYBOARD;
+	}
+#endif
 
 	if (boot_auto_calibrate_pending == TRUE && sys_pub.engineer_mode != CALIBRATE)
 	{
@@ -119,19 +172,65 @@ void system_t::RobotModeSet()
 	}
 
 	/*****遥控器失联模式判断*****/
-	if(!MonitorRc())
+	g_rc_online_debug = MonitorRc();
+	if(!g_rc_online_debug)
 	{
-		//失联模式进行保护
-		sys_pub.mode = DT7_MISSING;
+		// Keep safety limits, but do not block following mode/gesture logic.
 		sys_pub.fir_mode = CLOSE;
 		sys_pub.stir_mode = NO_MOVE;
-		sys_pub.engineer_mode = ZERO_FORCE;
-		return;
 	}
 	
 	/*****正常模式控制*****/
+	static uint16_t calibrate_hold_cnt = 0;
+	const uint16_t calibrate_hold_need = 1200;
+
+#if SYSTEM_ARM_CALIBRATE_PIPELINE_ENABLE
+	const int16_t rc_cali_hole = 450;
+	const bool_t calibrate_gesture =
+		system_rc_ctrl->rc.ch[1] < -rc_cali_hole &&
+		system_rc_ctrl->rc.ch[3] < -rc_cali_hole &&
+		(system_rc_ctrl->rc.ch[0] > rc_cali_hole || system_rc_ctrl->rc.ch[0] < -rc_cali_hole) &&
+		(system_rc_ctrl->rc.ch[2] > rc_cali_hole || system_rc_ctrl->rc.ch[2] < -rc_cali_hole) &&
+		switch_is_down(system_rc_ctrl->rc.s[LEFT_CHANNEL]) &&
+		switch_is_down(system_rc_ctrl->rc.s[RIGTH_CHANNEL]);
+
+	if (calibrate_gesture)
+	{
+		if (calibrate_hold_cnt < calibrate_hold_need)
+		{
+			calibrate_hold_cnt++;
+		}
+	}
+	else
+	{
+		calibrate_hold_cnt = 0;
+	}
+#else
+	calibrate_hold_cnt = 0;
+#endif
+
 	if(sys_pub.mode == INIT_MODE)
 	{
+		// Allow calibrate gesture even before INIT_MODE exits.
+		if (calibrate_hold_cnt >= calibrate_hold_need)
+		{
+			sys_pub.mode = NORMAL;
+			sys_pub.engineer_mode = CALIBRATE;
+			sys_pub.change_mode_flag = 1;
+			last_mode = sys_pub.mode;
+			return;
+		}
+
+		// Allow direct switch to relative-angle mode during debug.
+		if (switch_is_down(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_mid(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
+		{
+			sys_pub.mode = RELATIVE_ANGLE;
+			sys_pub.engineer_mode = STOP_POSITION;
+			sys_pub.change_mode_flag = 1;
+			last_mode = sys_pub.mode;
+			return;
+		}
+
 		//防止拨杆突然到最底下的情况
 		if(switch_is_down(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
 			sys_pub.mode = ZERO_FORCE_MOVE;
@@ -140,29 +239,6 @@ void system_t::RobotModeSet()
 	}
 	else
 	{
-		static uint16_t calibrate_hold_cnt = 0;
-		const int16_t rc_cali_hole = 600;
-		const uint16_t calibrate_hold_need = 2000;
-		const bool_t calibrate_gesture =
-			system_rc_ctrl->rc.ch[0] < -rc_cali_hole &&
-			system_rc_ctrl->rc.ch[1] < -rc_cali_hole &&
-			system_rc_ctrl->rc.ch[2] > rc_cali_hole &&
-			system_rc_ctrl->rc.ch[3] < -rc_cali_hole &&
-			switch_is_down(system_rc_ctrl->rc.s[LEFT_CHANNEL]) &&
-			switch_is_down(system_rc_ctrl->rc.s[RIGTH_CHANNEL]);
-
-		if (calibrate_gesture)
-		{
-			if (calibrate_hold_cnt < calibrate_hold_need)
-			{
-				calibrate_hold_cnt++;
-			}
-		}
-		else
-		{
-			calibrate_hold_cnt = 0;
-		}
-
 		// Legacy-style gesture entry: hold '\../' for 2s to enter new CALIBRATE workflow.
 		if (calibrate_hold_cnt >= calibrate_hold_need)
 		{

@@ -347,6 +347,16 @@ void chassis_t::SendMsgUpdate()
   */
 void chassis_t::ChassisInfoUpdate()
 {
+	// 单板模式下使用系统模式驱动底盘状态，避免未更新的chassis_msg导致误判为无力。
+	if (SysPointer()->mode == ZERO_FORCE_MOVE || SysPointer()->mode == DT7_MISSING || SysPointer()->mode == INIT_MODE)
+	{
+		chassis_mode = ZERO_FORCE_MOVE;
+	}
+	else
+	{
+		chassis_mode = NORMAL;
+	}
+
 	//获取电机速度，将电机的反馈的速度换算成底盘的速度
 	for (uint8_t i = 0; i <= 3; i++)
 		speed[i] = CHASSIS_MOTOR_RPM_TO_VECTOR_SEN *chassis_motor[i].GetRotorRpm();	   
