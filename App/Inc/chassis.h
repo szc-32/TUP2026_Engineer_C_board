@@ -39,7 +39,7 @@
 #define CHASSIS_WZ_CHANNEL     2          //在特殊模式下，可以通过遥控器控制旋转
 #define CHASSIS_WZ_SET_SCALE   -0.072f    //底盘设置旋转速度，设置前后左右轮不同设定速度的比例分权 0为在几何中心，不需要补偿
 #define MOTOR_DISTANCE_TO_CENTER 0.2f
-#define MAX_WHEEL_SPEED 6.0f	//底盘电机最大速度
+#define MAX_WHEEL_SPEED 3.5f	//底盘电机最大速度（调试安全档）
 
 #define CHASSIS_SPIN_WZ_SET 8.0f          //自旋行进固定角速度(rad/s)
 
@@ -111,7 +111,7 @@
 //A板或者C板单板控制
 #if BOARD_NUM == ONE_BOARD || (BOARD_NUM == TWO_BOARD && BOARD_PLACE == ON_CHASSIS)
 
-	#define MAX_WHEEL_SPEED 6.0f	//底盘电机最大速度
+	#define MAX_WHEEL_SPEED 3.5f	//底盘电机最大速度（调试安全档）
 
 	#define M3508_MOTOR_RPM_TO_VECTOR 0.000415809748903494517209f //m3508转化成底盘速度(m/s)的比例，做两个宏 是因为可能换电机需要更换比例
 	#define CHASSIS_MOTOR_RPM_TO_VECTOR_SEN M3508_MOTOR_RPM_TO_VECTOR
@@ -123,7 +123,7 @@
     #define CHASSIS_MOTOR_SPEED_PID_KP 8000.0f//10000.0f
     #define CHASSIS_MOTOR_SPEED_PID_KI 0.0f	
     #define CHASSIS_MOTOR_SPEED_PID_KD  2.0f//2.7f
-    #define M3508_MOTOR_SPEED_PID_MAX_OUT    16000.0f
+	#define M3508_MOTOR_SPEED_PID_MAX_OUT    6000.0f
     #define M3508_MOTOR_SPEED_PID_MAX_IOUT   1000.0f
 
 	

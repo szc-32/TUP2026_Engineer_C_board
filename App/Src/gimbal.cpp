@@ -32,6 +32,8 @@ static const fp32 GIMBAL_YAW_MIT_VEL_SET = 1.55f;
 static const fp32 GIMBAL_YAW_MIT_KP_SET = 20.0f;
 static const fp32 GIMBAL_YAW_MIT_KD_SET = 5.0f;
 static const fp32 GIMBAL_YAW_MIT_TOR_SET = 2.0f;
+static const fp32 GIMBAL_YAW_SAFE_TORQUE_SCALE = 0.35f;
+static const fp32 GIMBAL_YAW_SAFE_TORQUE_LIMIT = 1.2f;
 
 /********电机初始化设置*********/
 DM_Motor_Setting_t yaw_setting = {0};
@@ -196,8 +198,9 @@ void gimbal_t::GimbalControllerInit(uint8_t type)
 			height_motor.controller.angle_PID.Init(PID_POSITION,height_motor_angle_pid,50,5);
 		}else if(type == NORMAL_PARAM)
 		{
-			yaw_absolute_set_rad = yaw_absolute_start_rad;//= yaw_absolute_rad           改动
-			yaw_absolute_start_rad = yaw_absolute_rad;                                 //添加
+			// Enter NORMAL smoothly: lock absolute setpoint to current yaw to avoid follow-loop kick.
+			yaw_absolute_set_rad = yaw_absolute_rad;
+			yaw_absolute_start_rad = yaw_absolute_rad;
 			// pit_absolute_set_rad = pit_absolute_rad;
 			yaw_ladrc_fdw.Init(yaw_normal_config, yaw_motor.dm_motor[Motor1].tmp.TMAX);
 			// pit_motor.controller.ladrc_fdw.Init(pit_normal_config,NULL);
@@ -328,7 +331,7 @@ void gimbal_t::BasicInfoUpdate()
 	}
 	else
 	{
-		gimbal_msg.yaw_relative_angle = yaw_absolute_rad - yaw_absolute_start_rad;
+		gimbal_msg.yaw_relative_angle = rad_format(yaw_absolute_rad - yaw_absolute_start_rad);
 	}
 	// gimbal_msg.pit_relative_angle = 1.0f * PIT_TRANSMISSION_RADIO * pit_motor.MotorEcdToAngle(NULL,PIT_OFFSET,MOTOR_TO_PIT_RADIO);//改动
 	// test_motor.LKMotorControl(NULL,&LK_Motor_speed,NULL,OFF_SET);
@@ -451,6 +454,7 @@ void gimbal_t::AutoInfoUpdate()
 void gimbal_t::NormalControl()
 {
 	DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
+	fp32 yaw_tor_cmd;
 	if (yaw_dm_enabled == FALSE)
 	{
 		enable_motor_mode(DMYawCanHandle(), yaw_dm->id, MIT_MODE);
@@ -460,10 +464,19 @@ void gimbal_t::NormalControl()
 	yaw_dm->dm_ctrl_set.mode = mit_mode;
 	yaw_dm->dm_ctrl_set.pos_set = 0.0f;
 	yaw_dm->dm_ctrl_set.vel_set = 0.0f;
-	yaw_dm->dm_ctrl_set.kp_set = 0.0f;
-	yaw_dm->dm_ctrl_set.kd_set = 0.0f;
-	yaw_dm->dm_ctrl_set.tor_set = DMYawApplyDirection(
-		yaw_ladrc_fdw.FDW_Calc(yaw_absolute_rad, yaw_absolute_set_rad, yaw_gyro));
+	yaw_dm->dm_ctrl_set.kp_set = 15.0f;
+	yaw_dm->dm_ctrl_set.kd_set = 2.0f;
+	yaw_tor_cmd = yaw_ladrc_fdw.FDW_Calc(yaw_absolute_rad, yaw_absolute_set_rad, yaw_gyro);
+	yaw_tor_cmd *= GIMBAL_YAW_SAFE_TORQUE_SCALE;
+	if (yaw_tor_cmd > GIMBAL_YAW_SAFE_TORQUE_LIMIT)
+	{
+		yaw_tor_cmd = GIMBAL_YAW_SAFE_TORQUE_LIMIT;
+	}
+	else if (yaw_tor_cmd < -GIMBAL_YAW_SAFE_TORQUE_LIMIT)
+	{
+		yaw_tor_cmd = -GIMBAL_YAW_SAFE_TORQUE_LIMIT;
+	}
+	yaw_dm->dm_ctrl_set.tor_set = DMYawApplyDirection(yaw_tor_cmd);
 
 	yaw_motor.DMMotorControl(DMYawCanHandle(), yaw_dm);
 	// pit_motor.DJIMotorControl(&pit_absolute_rad,&pit_absolute_set_rad,&pitch_gyro,OFF_SET);
@@ -487,8 +500,8 @@ void gimbal_t::ZeroForceControl()
 	yaw_dm->dm_ctrl_set.mode = mit_mode;
 	yaw_dm->dm_ctrl_set.pos_set = 0.0f;
 	yaw_dm->dm_ctrl_set.vel_set = 0.0f;
-	yaw_dm->dm_ctrl_set.kp_set = 0.0f;
-	yaw_dm->dm_ctrl_set.kd_set = 0.0f;
+	yaw_dm->dm_ctrl_set.kp_set = 15.0f;
+	yaw_dm->dm_ctrl_set.kd_set = 2.0f;
 	yaw_dm->dm_ctrl_set.tor_set = 0.0f;
 
 	yaw_motor.DMMotorControl(DMYawCanHandle(), yaw_dm);
@@ -515,6 +528,7 @@ void gimbal_t::RelativeControl()
 	// pit_relative_set=pit_motor.MotorWorkSpaceLimit(pit_relative_set,add_pit,MAX_PIT_RELATIVE,MIN_PIT_RELATIVE);
 	
 	DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
+	fp32 yaw_tor_cmd;
 	if (yaw_dm_enabled == FALSE)
 	{
 		enable_motor_mode(DMYawCanHandle(), yaw_dm->id, MIT_MODE);
@@ -526,8 +540,17 @@ void gimbal_t::RelativeControl()
 	yaw_dm->dm_ctrl_set.vel_set = 0.0f;
 	yaw_dm->dm_ctrl_set.kp_set = 0.0f;
 	yaw_dm->dm_ctrl_set.kd_set = 0.0f;
-	yaw_dm->dm_ctrl_set.tor_set = DMYawApplyDirection(
-		yaw_ladrc_fdw.FDW_Calc(gimbal_msg.yaw_relative_angle, yaw_relative_set, yaw_gyro));
+	yaw_tor_cmd = yaw_ladrc_fdw.FDW_Calc(gimbal_msg.yaw_relative_angle, yaw_relative_set, yaw_gyro);
+	yaw_tor_cmd *= GIMBAL_YAW_SAFE_TORQUE_SCALE;
+	if (yaw_tor_cmd > GIMBAL_YAW_SAFE_TORQUE_LIMIT)
+	{
+		yaw_tor_cmd = GIMBAL_YAW_SAFE_TORQUE_LIMIT;
+	}
+	else if (yaw_tor_cmd < -GIMBAL_YAW_SAFE_TORQUE_LIMIT)
+	{
+		yaw_tor_cmd = -GIMBAL_YAW_SAFE_TORQUE_LIMIT;
+	}
+	yaw_dm->dm_ctrl_set.tor_set = DMYawApplyDirection(yaw_tor_cmd);
 
 	yaw_motor.DMMotorControl(DMYawCanHandle(), yaw_dm);
 	// pit_motor.DJIMotorControl(&gimbal_msg.pit_relative_angle,&pit_relative_set,&pitch_gyro,OFF_SET);

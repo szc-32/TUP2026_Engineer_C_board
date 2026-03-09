@@ -20,7 +20,7 @@
 #define YAW_MOUSE_SEN   0.00005f
 #define PITCH_MOUSE_SEN 0.00005f
 // 可改灵敏度：遥控器通道值到角速度/角度增量映射
-#define YAW_RC_SEN    -0.000005f
+#define YAW_RC_SEN    -0.0000025f
 #define PITCH_RC_SEN  0.00000222f //0.005
 
 //可改灵敏度
@@ -40,7 +40,7 @@
 #define CHASSIS_RIGHT_KEY KEY_PRESSED_OFFSET_D
 
 //遥控器输入死区，因为遥控器存在差异，摇杆在中间，其值不一定为零
-#define RC_DEADBAND   0
+#define RC_DEADBAND   10
 //摇杆死区（底盘）
 #define CHASSIS_RC_DEADLINE 10
 // 拨轮死区（遥控器原始通道值，约[-660, 660]）

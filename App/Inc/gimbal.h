@@ -33,7 +33,7 @@
 #define GIMBAL_POWERON_USE_PHOTOGATE         0
 #define GIMBAL_SPIN_EXIT_REHOME_USE_PHOTOGATE 1
 // 上电不找光电门时，使用达妙绝对编码角作为回中参考（按机械安装标定）
-#define GIMBAL_POWERON_ENCODER_CENTER_RAD    0.0f
+#define GIMBAL_POWERON_ENCODER_CENTER_RAD    -2.8f
 
 // 上电回中标定调试打印
 #define GIMBAL_CENTER_DEBUG_PRINT_ENABLE      1

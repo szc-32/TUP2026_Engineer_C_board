@@ -176,8 +176,13 @@ void chassis_t::Get_Information()
   */
 void ChassisTask()
 {
-	//空闲一段时间
-  vTaskDelay(CHASSIS_TASK_INIT_TIME);
+	// Only delay once after startup; delaying every cycle makes control loop too slow and unstable.
+	static uint8_t chassis_task_started = 0;
+	if (chassis_task_started == 0)
+	{
+		vTaskDelay(CHASSIS_TASK_INIT_TIME);
+		chassis_task_started = 1;
+	}
 
 #if BOARD_NUM == ONE_BOARD
 	chassis.ChassisInfoUpdate(); //信息更新
@@ -212,11 +217,23 @@ void chassis_t::ControlSet()
 	{
 		case NORMAL:
 		case AUTO:
+		{
+			fp32 yaw_follow_err;
 			//平移设置
 			RobotTranslationSet(); 
 			//旋转设置
-			robot_wz_set=chassis_angle_pid.Calc(0,GimbalPointer()->yaw_relative_angle);
+			yaw_follow_err = rad_format(GimbalPointer()->yaw_relative_angle);
+			if (fabs(yaw_follow_err) < 0.02f)
+			{
+				yaw_follow_err = 0.0f;
+			}
+			robot_wz_set = chassis_angle_pid.Calc(yaw_follow_err, 0.0f);
+			if (fabs(robot_wz_set) < 0.05f)
+			{
+				robot_wz_set = 0.0f;
+			}
 			break;
+		}
 		case SPIN:
 		case SPIN_AUTO:
 			// SpinTranslationSet();

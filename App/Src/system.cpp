@@ -483,6 +483,8 @@ void system_t::KeyBoardQuantitySet()
 		key_yaw = 1;
 	else if(IF_KEY_PRESSED_E)
 		key_yaw = -1;
+	else
+		key_yaw = 0;
 	
 	/***基础运动设置前后左右运动W、S、A、D***/
 	if(IF_KEY_PRESSED_W)
