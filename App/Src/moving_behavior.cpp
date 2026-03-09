@@ -945,7 +945,7 @@ void moving_t::BehaviorDMArmCalibrate()
 	if (task_step_1 == 4)
 	{
 		// Completion cue: two short beeps.
-		buzzer.BuzzerWarn(2, 100, 35, 10000);
+		CalibrateBeepStart(320, 60, 160, 35);
 		SysPointer()->mode = NORMAL;
 		SysPointer()->engineer_mode = KEYBOARD;
 		SysPointer()->change_mode_flag = 1;
