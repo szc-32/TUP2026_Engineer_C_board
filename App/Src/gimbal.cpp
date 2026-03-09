@@ -62,6 +62,7 @@ static bool_t yaw_poweron_init_done = FALSE;
 #endif
 static bool_t yaw_spin_exit_rehome_pending = FALSE;
 static Control_Mode_t yaw_last_raw_mode = ZERO_FORCE_MOVE;
+static bool_t yaw_dm_enabled = FALSE;
 
 static bool_t IsSpinMode(Control_Mode_t mode)
 {
@@ -160,6 +161,7 @@ void GimbalInit()
 	/******电机初始化******/
 	gimbal.yaw_motor.DMMotorInit(&yaw_setting);
 	gimbal.yaw_motor.DM_motor_para_init(&gimbal.yaw_motor.dm_motor[Motor1]);
+	yaw_dm_enabled = TRUE;
 	gimbal.height_motor.DJIMotorInit(&height_setting);
 	PhotogateInit(&yaw_photogate,
 				  PHOTOGATE_GPIO_Port,
@@ -449,6 +451,11 @@ void gimbal_t::AutoInfoUpdate()
 void gimbal_t::NormalControl()
 {
 	DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
+	if (yaw_dm_enabled == FALSE)
+	{
+		enable_motor_mode(DMYawCanHandle(), yaw_dm->id, MIT_MODE);
+		yaw_dm_enabled = TRUE;
+	}
 
 	yaw_dm->dm_ctrl_set.mode = mit_mode;
 	yaw_dm->dm_ctrl_set.pos_set = 0.0f;
@@ -469,7 +476,22 @@ void gimbal_t::NormalControl()
   */
 void gimbal_t::ZeroForceControl()
 {
-	yaw_motor.DMMotorZeroForce(DMYawCanHandle(), &yaw_motor.dm_motor[Motor1]);
+	DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
+	if (yaw_dm_enabled == FALSE)
+	{
+		enable_motor_mode(DMYawCanHandle(), yaw_dm->id, MIT_MODE);
+		yaw_dm_enabled = TRUE;
+	}
+
+	// Keep DM motor enabled: send zero-torque MIT command instead of disable frame.
+	yaw_dm->dm_ctrl_set.mode = mit_mode;
+	yaw_dm->dm_ctrl_set.pos_set = 0.0f;
+	yaw_dm->dm_ctrl_set.vel_set = 0.0f;
+	yaw_dm->dm_ctrl_set.kp_set = 0.0f;
+	yaw_dm->dm_ctrl_set.kd_set = 0.0f;
+	yaw_dm->dm_ctrl_set.tor_set = 0.0f;
+
+	yaw_motor.DMMotorControl(DMYawCanHandle(), yaw_dm);
 	// pit_motor.MotorZeroForce();
 }
 
@@ -493,6 +515,11 @@ void gimbal_t::RelativeControl()
 	// pit_relative_set=pit_motor.MotorWorkSpaceLimit(pit_relative_set,add_pit,MAX_PIT_RELATIVE,MIN_PIT_RELATIVE);
 	
 	DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
+	if (yaw_dm_enabled == FALSE)
+	{
+		enable_motor_mode(DMYawCanHandle(), yaw_dm->id, MIT_MODE);
+		yaw_dm_enabled = TRUE;
+	}
 
 	yaw_dm->dm_ctrl_set.mode = mit_mode;
 	yaw_dm->dm_ctrl_set.pos_set = 0.0f;
@@ -531,13 +558,7 @@ void gimbal_t::InitInfoUpdate()
 	yaw_center_error = InitYawErrorRad();
 	GimbalCenterDebugPrint(yaw_center_error);
 
-	if(fabs(INIT_PITCH_SET - pit_absolute_rad) > GIMBAL_INIT_ANGLE_ERROR)  //先PITCH轴初始化
-	{
-		ResetYawFindState();
-		add_pit = (INIT_PITCH_SET - pit_absolute_rad) * GIMBAL_INIT_PITCH_SPEED;
-		add_yaw = 0.0f;
-	}
-	else if (need_photogate_find == TRUE && PhotogateHomeValid(&yaw_photogate) == FALSE) //按策略找光电门
+	if (need_photogate_find == TRUE && PhotogateHomeValid(&yaw_photogate) == FALSE) //按策略找光电门
 	{
 		if (yaw_find_state_init == 0U)
 		{
@@ -553,7 +574,7 @@ void gimbal_t::InitInfoUpdate()
 		}
 #endif
 
-		add_pit = (INIT_PITCH_SET - pit_absolute_rad) * GIMBAL_INIT_PITCH_SPEED;
+		add_pit = 0.0f;
 		add_yaw = GIMBAL_INIT_YAW_FIND_SPEED * yaw_find_dir;
 	}
 	else // 光电门有效时使用相对角；上电不找门时使用达妙绝对编码角回中
@@ -561,7 +582,7 @@ void gimbal_t::InitInfoUpdate()
 		fp32 yaw_for_center;
 
 		ResetYawFindState();
-		add_pit = (INIT_PITCH_SET - pit_absolute_rad) * GIMBAL_INIT_PITCH_SPEED;
+		add_pit = 0.0f;
 		if (PhotogateHomeValid(&yaw_photogate) == TRUE)
 		{
 			yaw_for_center = gimbal_msg.yaw_relative_angle;
@@ -594,8 +615,7 @@ void gimbal_t::JudgeInitState()
 	yaw_error = InitYawErrorRad();
         
 	//目标值与当前值之差小于阈值超过一定时间，则判断初始化完成
-	if((fabs(yaw_error) < GIMBAL_INIT_ANGLE_ERROR &&
-      fabs(pit_absolute_rad - INIT_PITCH_SET) < GIMBAL_INIT_ANGLE_ERROR))
+	if(fabs(yaw_error) < GIMBAL_INIT_ANGLE_ERROR)
   {        
     if(init_stop_time < GIMBAL_INIT_STOP_TIME)
       init_stop_time++;
