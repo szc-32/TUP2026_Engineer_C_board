@@ -47,15 +47,22 @@
 #define CHASSIS_MOTOR_RPM_TO_VECTOR_SEN M3508_MOTOR_RPM_TO_VECTOR
 
 
-//yaw,pitch控制通道以及状态开关通道
-#define YAW_CHANNEL   2
-#define PITCH_CHANNEL 3
+// yaw/pitch control channels (shared in operation_def.h)
+#ifndef YAW_CHANNEL
+#define YAW_CHANNEL   0
+#endif
+#ifndef PITCH_CHANNEL
+#define PITCH_CHANNEL 1
+#endif
 #define GIMBAL_MODE_CHANNEL 0
 #define REVOLVER_MODE_CHANNEL 1
-//前后的遥控器通道号码
-#define CHASSIS_X_CHANNEL 1
-//左右的遥控器通道号码
-#define CHASSIS_Y_CHANNEL 0
+// chassis translation channels: left stick (forward/back and left/right)
+#ifndef CHASSIS_X_CHANNEL
+#define CHASSIS_X_CHANNEL 3
+#endif
+#ifndef CHASSIS_Y_CHANNEL
+#define CHASSIS_Y_CHANNEL 2
+#endif
 //底盘控制模式
 #define GIMBAL_CALC 0
 #define CHASSIS_CALC 1
@@ -72,7 +79,9 @@
 #endif
 #define CHASSIS_VY_RC_SEN 0.0055f  //遥控器左右摇杆（max 660）转化成车体左右速度（m/s）的比例
 //底盘yaw,pitch遥杆转化比例
+#ifndef YAW_RC_SEN
 #define YAW_RC_SEN    -0.000005f
+#endif
 #ifdef PITCH_RC_SEN
 #undef PITCH_RC_SEN
 #endif
@@ -88,7 +97,9 @@
 #define CHASSIS_RIGHT_KEY KEY_PRESSED_OFFSET_D
 
 //遥控器输入死区，因为遥控器存在差异，摇杆在中间，其值不一定为零
-#define RC_DEADBAND   0
+#ifndef RC_DEADBAND
+#define RC_DEADBAND   2
+#endif
 //摇杆死区（底盘）
 #define CHASSIS_RC_DEADLINE 10
 

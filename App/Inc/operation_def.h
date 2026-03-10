@@ -6,28 +6,27 @@
 #ifndef __OPERATION_DEF_H
 #define __OPERATION_DEF_H
 
-//yaw,pitch控制通道以及状态开关通道
-#define YAW_CHANNEL   2
-#define PITCH_CHANNEL 3
+// yaw/pitch control channels (DJI DBUS: ch0 right-x, ch1 right-y, ch2 left-x, ch3 left-y)
+#define YAW_CHANNEL   0
+#define PITCH_CHANNEL 1
 #define RIGTH_CHANNEL 0
 #define LEFT_CHANNEL 1
-//前后的遥控器通道号码
-#define CHASSIS_X_CHANNEL 1
-//左右的遥控器通道号码
-#define CHASSIS_Y_CHANNEL 0
+// chassis translation channels: left stick
+#define CHASSIS_X_CHANNEL 3
+#define CHASSIS_Y_CHANNEL 2
 
 // 可改灵敏度：鼠标位移到角速度/角度增量映射（按1ms主循环调参）
 #define YAW_MOUSE_SEN   0.00005f
 #define PITCH_MOUSE_SEN 0.00005f
 // 可改灵敏度：遥控器通道值到角速度/角度增量映射
-#define YAW_RC_SEN    -0.0000025f
-#define PITCH_RC_SEN  0.00000222f //0.005
+#define YAW_RC_SEN     0.000005f
+#define PITCH_RC_SEN  -0.00000222f //0.005
 
 //可改灵敏度
 //遥控器前进摇杆（max 660）转化成车体前进速度（m/s）的比例
-#define CHASSIS_VX_RC_SEN 0.006f
+#define CHASSIS_VX_RC_SEN 0.0055f
 //遥控器左右摇杆（max 660）转化成车体左右速度（m/s）的比例
-#define CHASSIS_VY_RC_SEN 0.005f
+#define CHASSIS_VY_RC_SEN 0.0055f
 
 //YAW左右转控制按钮
 #define GIMBAL_LEFT_KEY KEY_PRESSED_OFFSET_Q
@@ -40,7 +39,7 @@
 #define CHASSIS_RIGHT_KEY KEY_PRESSED_OFFSET_D
 
 //遥控器输入死区，因为遥控器存在差异，摇杆在中间，其值不一定为零
-#define RC_DEADBAND   10
+#define RC_DEADBAND   1
 //摇杆死区（底盘）
 #define CHASSIS_RC_DEADLINE 10
 // 拨轮死区（遥控器原始通道值，约[-660, 660]）

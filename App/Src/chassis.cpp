@@ -223,11 +223,15 @@ void chassis_t::ControlSet()
 			RobotTranslationSet(); 
 			//旋转设置
 			yaw_follow_err = rad_format(GimbalPointer()->yaw_relative_angle);
+			// Limit large-angle follow error to keep 180-degree transitions from exciting sway.
+			yaw_follow_err = fp32_constrain(yaw_follow_err, -1.2f, 1.2f);
 			if (fabs(yaw_follow_err) < 0.02f)
 			{
 				yaw_follow_err = 0.0f;
 			}
 			robot_wz_set = chassis_angle_pid.Calc(yaw_follow_err, 0.0f);
+			// Keep yaw-follow command conservative to avoid high-speed lateral oscillation.
+			robot_wz_set = fp32_constrain(robot_wz_set, -2.5f, 2.5f);
 			if (fabs(robot_wz_set) < 0.05f)
 			{
 				robot_wz_set = 0.0f;
@@ -452,15 +456,15 @@ for (int i = 0; i <=3; i++)
 void chassis_t::VectorToWheelSpeed(fp32 *lf_wheel_speed,fp32 *lb_wheel_speed,fp32 *rb_wheel_speed,fp32 *rf_wheel_speed,fp32 scale_k)
 {
 	#if CHASSIS_TYPE == All_Mecanum  //麦轮解算
-	wheel_speed[LF] = (-scale_k*robot_vx_set + scale_k*robot_vy_set + (CHASSIS_WZ_SET_SCALE - 1.0f) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
-	wheel_speed[LB] = (-scale_k*robot_vx_set - scale_k*robot_vy_set + (CHASSIS_WZ_SET_SCALE - 1.0f) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
-	wheel_speed[RB] = (scale_k*robot_vx_set - scale_k*robot_vy_set + (CHASSIS_WZ_SET_SCALE - 1.0f) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
-	wheel_speed[RF] = (scale_k*robot_vx_set + scale_k*robot_vy_set + (CHASSIS_WZ_SET_SCALE - 1.0f) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
+	wheel_speed[LF] = (-scale_k*robot_vx_set + scale_k*robot_vy_set + (1.0f + CHASSIS_WZ_SET_SCALE) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
+	wheel_speed[LB] = (-scale_k*robot_vx_set - scale_k*robot_vy_set + (1.0f + CHASSIS_WZ_SET_SCALE) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
+	wheel_speed[RB] = (scale_k*robot_vx_set - scale_k*robot_vy_set + (1.0f + CHASSIS_WZ_SET_SCALE) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
+	wheel_speed[RF] = (scale_k*robot_vx_set + scale_k*robot_vy_set + (1.0f + CHASSIS_WZ_SET_SCALE) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
 	#elif CHASSIS_TYPE == All_Omnidirectional  //全向轮解算
-	wheel_speed[LF] = (-scale_k*robot_vx_set + scale_k*robot_vy_set + (CHASSIS_WZ_SET_SCALE - 1.0f) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
-	wheel_speed[LB] = (-scale_k*robot_vx_set - scale_k*robot_vy_set + (CHASSIS_WZ_SET_SCALE - 1.0f) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
-	wheel_speed[RB] = (scale_k*robot_vx_set - scale_k*robot_vy_set + (CHASSIS_WZ_SET_SCALE - 1.0f) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
-	wheel_speed[RF] = (scale_k*robot_vx_set + scale_k*robot_vy_set + (CHASSIS_WZ_SET_SCALE - 1.0f) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
+	wheel_speed[LF] = (-scale_k*robot_vx_set + scale_k*robot_vy_set + (1.0f + CHASSIS_WZ_SET_SCALE) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
+	wheel_speed[LB] = (-scale_k*robot_vx_set - scale_k*robot_vy_set + (1.0f + CHASSIS_WZ_SET_SCALE) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
+	wheel_speed[RB] = (scale_k*robot_vx_set - scale_k*robot_vy_set + (1.0f + CHASSIS_WZ_SET_SCALE) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
+	wheel_speed[RF] = (scale_k*robot_vx_set + scale_k*robot_vy_set + (1.0f + CHASSIS_WZ_SET_SCALE) * MOTOR_DISTANCE_TO_CENTER * scale_k*robot_wz_set);
 	#endif
 }
 

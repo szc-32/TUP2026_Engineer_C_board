@@ -71,7 +71,12 @@ static void DecodeDMMotor(CAN_Rx_Instance_t *rx_instance)
 	DM_motor_t *dm_motor_para = &(dm_motor_pit->dm_motor[Motor1]) ;
 		switch (dm_motor_para->mst_id)
 	{
- 		case 0x02:	get_DM4310_motor_measure(dm_motor_para,rxbuff);
+			case 0x00:
+			case 0x02:
+				get_DM4310_motor_measure(dm_motor_para, rxbuff);
+				break;
+			default:
+				break;
 	}
 
 }

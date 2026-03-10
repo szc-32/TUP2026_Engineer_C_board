@@ -425,10 +425,9 @@ void system_t::CalControlQuantity()
 	sys_pub.add_yaw = (yaw_channel * YAW_RC_SEN - 
 												 mouse_yaw +
 												 key_yaw*0.00003);
-	
-	sys_pub.add_pit = (pitch_channel * PITCH_RC_SEN - 
-												 mouse_pitch 
-												);
+
+	// Pitch control path is intentionally disabled; keep yaw-only gimbal control.
+	sys_pub.add_pit = 0.0f;
 	
 	vx_ramp_set = RAMP_float(vx_set_channel,vx_ramp_set,0.004);
 	vy_ramp_set = RAMP_float(vy_set_channel,vy_ramp_set,0.004);
@@ -456,7 +455,8 @@ void system_t::RemoteQuantitySet()
 	
 	//将遥控器的数据处理死区 int16_t yaw_channel,pitch_channel
 	rc_deadband_limit(system_rc_ctrl->rc.ch[YAW_CHANNEL], yaw_channel, RC_DEADBAND);
-    rc_deadband_limit(system_rc_ctrl->rc.ch[PITCH_CHANNEL], pitch_channel, RC_DEADBAND);
+	// Pitch channel is disabled in yaw-only debug profile.
+	pitch_channel = 0;
 	
 	//遥控器死区限制，因为遥控器可能存在差异 摇杆在中间，其值不为0
     rc_deadband_limit(system_rc_ctrl->rc.ch[CHASSIS_X_CHANNEL], vx_channel, CHASSIS_RC_DEADLINE);
@@ -476,7 +476,8 @@ void system_t::KeyBoardQuantitySet()
 {
 	//鼠标对应YAW,PITCH的灵敏度
 	mouse_yaw = LPF(&yaw_lpf ,0.002,system_rc_ctrl->mouse.x * YAW_MOUSE_SEN, 14);
-	mouse_pitch = LPF(&pitch_lpf ,0.002,system_rc_ctrl->mouse.y * PITCH_MOUSE_SEN, 30);
+	// Pitch input is disabled in yaw-only debug profile.
+	mouse_pitch = 0.0f;
 	
 	//按键Q、E进行YAW轴灵敏度
 	if(IF_KEY_PRESSED_Q)
