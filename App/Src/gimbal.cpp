@@ -28,12 +28,11 @@
 //创建实例
 gimbal_t gimbal;
 
-static const fp32 GIMBAL_YAW_SAFE_TORQUE_SCALE = 0.35f;
-static const fp32 GIMBAL_YAW_SAFE_TORQUE_LIMIT = 1.2f;
+static const fp32 GIMBAL_YAW_SAFE_TORQUE_SCALE = 0.5f;
+static const fp32 GIMBAL_YAW_SAFE_TORQUE_LIMIT = 0.4f;
 
 /********电机初始化设置*********/
 DM_Motor_Setting_t yaw_setting = {0};
-Motor_Setting_t height_setting = {"height",ON_CAN2,5,M2006,POSITIVE_DIRECT,RATIO_1_TO_36,CASCADE_LOOP};
 // LK_Motor_Setting_t test_setting = {"test",ON_CAN1,1,POSITIVE_DIRECT,SINGLE_LOOP};
 
 /********电机控制器参数设置*********/
@@ -45,13 +44,11 @@ fp32 pit_normal_config[]={30,0.008f,120,20,1};
 fp32 yaw_auto_config[]={16,0.0065,80,25,0.2f};
 fp32 pit_auto_config[]={17,0.0065,85,17,0.3f};
 
-fp32 height_motor_speed_pid[3]={1500,0,500};
-fp32 height_motor_angle_pid[3]={0.01,0,0.005};
-
 fp32 test_pid[]={1,0,0};
 
 static Photogate_t yaw_photogate;
-static fp32 yaw_encoder_absolute_rad = -2.3f;
+static fp32 yaw_encoder_absolute_rad = 0.0f;
+volatile fp32 init_yaw_set_dbg = INIT_YAW_SET;
 static fp32 yaw_find_dir = 1.0f;
 static uint32_t yaw_find_time_cnt = 0U;
 static uint8_t yaw_find_state_init = 0U;
@@ -128,17 +125,10 @@ static hcan_t *DMYawCanHandle()
 
 static void EnsureYawDMEnabled(DM_motor_t *yaw_dm)
 {
-	static uint16_t enable_retry_tick = 0U;
-
-	if (yaw_dm_enabled == FALSE || enable_retry_tick == 0U)
+	if (yaw_dm_enabled == FALSE)
 	{
 		enable_motor_mode(DMYawCanHandle(), yaw_dm->id, MIT_MODE);
 		yaw_dm_enabled = TRUE;
-		enable_retry_tick = 200U; // Retry every ~200 control cycles as a safety net.
-	}
-	else
-	{
-		enable_retry_tick--;
 	}
 }
 /**
@@ -150,6 +140,7 @@ gimbal_t::gimbal_t()
 {
 	yaw_absolute_set_rad = yaw_absolute_rad = 0.0f;
 	yaw_absolute_start_rad = 0.0f;
+	yaw_home_absolute_rad = 0.0f;
 	yaw_relative_set = 0.0f;
 	pit_relative_set = 0.0f;
 	add_yaw = 0.0f;
@@ -176,7 +167,6 @@ void GimbalInit()
 	gimbal.yaw_motor.DM_motor_para_init(&gimbal.yaw_motor.dm_motor[Motor1]);
 	// Force first control cycle to send DM enable frame.
 	yaw_dm_enabled = FALSE;
-	gimbal.height_motor.DJIMotorInit(&height_setting);
 	PhotogateInit(&yaw_photogate,
 				  PHOTOGATE_GPIO_Port,
 				  PHOTOGATE_Pin,
@@ -206,8 +196,6 @@ void gimbal_t::GimbalControllerInit(uint8_t type)
 		{
 			ResetYawFindState();
 			yaw_ladrc_fdw.Init(yaw_init_config, yaw_motor.dm_motor[Motor1].tmp.TMAX);
-			height_motor.controller.speed_PID.Init(PID_POSITION,height_motor_speed_pid,10000,5000);
-			height_motor.controller.angle_PID.Init(PID_POSITION,height_motor_angle_pid,50,5);
 		}else if(type == NORMAL_PARAM)
 		{
 			// Enter NORMAL smoothly: lock absolute setpoint to current yaw to avoid follow-loop kick.
@@ -263,6 +251,23 @@ void GimbalTask()
 	{
 		run_mode = INIT_MODE;
 		SysPointer()->mode = INIT_MODE;
+	}
+
+	{
+		DM_motor_t *yaw_dm = &gimbal.yaw_motor.dm_motor[Motor1];
+		if (run_mode == DT7_MISSING || run_mode == ZERO_FORCE_MOVE)
+		{
+			if (yaw_dm_enabled == TRUE)
+			{
+				gimbal.yaw_motor.DMMotorZeroForce(DMYawCanHandle(), yaw_dm);
+				yaw_dm_enabled = FALSE;
+			}
+		}
+		else
+		{
+			// Non-zero-force modes: enable once when entering the mode.
+			EnsureYawDMEnabled(yaw_dm);
+		}
 	}
 
 	//根据不同模式选择不同控制量信息来源
@@ -374,9 +379,9 @@ void gimbal_t::BasicInfoUpdate()
 	}
 	// gimbal_msg.pit_relative_angle = 1.0f * PIT_TRANSMISSION_RADIO * pit_motor.MotorEcdToAngle(NULL,PIT_OFFSET,MOTOR_TO_PIT_RADIO);//改动
 	// test_motor.LKMotorControl(NULL,&LK_Motor_speed,NULL,OFF_SET);
-//	test_motor.EncodeTorqueControlData(test_motor.controller.send_current);
 	// test_motor.EncodeTorqueControlData(test_motor.controller.send_current);
-//	test_motor.EncodeSpeedControlData(10);
+	// test_motor.EncodeTorqueControlData(test_motor.controller.send_current);
+	// test_motor.EncodeSpeedControlData(10);
 	// gimbal_msg.yaw_down_relative_angle = test_motor.LKMotorEcdToAngle(5000,1);
 }
 
@@ -387,134 +392,103 @@ void gimbal_t::BasicInfoUpdate()
   */
 void gimbal_t::OperationInfoUpdate()
 {
-	static fp32 gimbal_end_angle = 0.0f;
-	if(SysPointer()->mode == NORMAL)     //底盘跟随云台模式
-	{
-		//add值更新并限幅
-		add_yaw = AbsoluteControlAddLimit((yaw_absolute_set_rad-yaw_absolute_rad),SysPointer()->add_yaw,gimbal_msg.yaw_relative_angle,MAX_YAW_RELATIVE,MIN_YAW_RELATIVE);
-	}else if(SysPointer()->mode == SPIN) //小陀螺模式
-	{
-		//add值更新，不进行限幅
-		add_yaw = SysPointer()->add_yaw;
-	}else if(SysPointer()->mode == RELATIVE_ANGLE || SysPointer()->mode == NO_FOLLOW_YAW)
-	{
-		// 相对角模式直接使用系统解算后的遥控增量。
-		add_yaw = SysPointer()->add_yaw;
-	}
-	
-	//一键掉头判断
-	if(!SysPointer()->key_flag.turn_round_flag)
-	{
-		gimbal_end_angle = rad_format(yaw_absolute_rad + PI);
-	}
-	if(SysPointer()->key_flag.turn_round_flag)
-	{
-		//不断控制到掉头的目标值，正转，反装是随机
+    static fp32 gimbal_end_angle = 0.0f;
+    const bool_t yaw_idle = (fabs(SysPointer()->add_yaw) <= GIMBAL_YAW_IDLE_INPUT_EPS) ? TRUE : FALSE;
+    // 拨杆拨动时持续转动到限幅并保持，拨杆回到死区时回到INIT_YAW_SET
+    if(SysPointer()->mode == NORMAL)
+    {
+        if (yaw_idle == TRUE)
+        {
+            // 死区：自动回到初始位置
+            add_yaw = 0.0f;
+            yaw_absolute_set_rad = INIT_YAW_SET;
+        }
+        else
+        {
+            // 拨杆拨动：持续输出扭矩，直到限幅
+            fp32 next_angle = yaw_absolute_set_rad + SysPointer()->add_yaw;
+            if (next_angle > MAX_YAW_RELATIVE)
+            {
+                yaw_absolute_set_rad = MAX_YAW_RELATIVE;
+            }
+            else if (next_angle < MIN_YAW_RELATIVE)
+            {
+                yaw_absolute_set_rad = MIN_YAW_RELATIVE;
+            }
+            else
+            {
+                yaw_absolute_set_rad = next_angle;
+            }
+            add_yaw = 0.0f; // 由MIT模式扭矩控制
+        }
+    }
+    else if(SysPointer()->mode == SPIN)
+    {
+        add_yaw = SysPointer()->add_yaw;
+    }
+    else if(SysPointer()->mode == RELATIVE_ANGLE || SysPointer()->mode == NO_FOLLOW_YAW)
+    {
+        add_yaw = SysPointer()->add_yaw;
+    }
+    // 一键掉头判断
+    if(!SysPointer()->key_flag.turn_round_flag)
+    {
+        gimbal_end_angle = rad_format(yaw_absolute_rad + PI);
+    }
+    if(SysPointer()->key_flag.turn_round_flag)
+    {
         if (rad_format(gimbal_end_angle - yaw_absolute_set_rad) > 0.0f)
-			add_yaw += TURN_SPEED;
+            add_yaw += TURN_SPEED;
         else
             add_yaw -= TURN_SPEED;
-		
-		//到达pi （180°）后停止
-		if(fabs(rad_format(gimbal_end_angle - yaw_absolute_rad)) < 0.01f)
-		    SysPointer()->key_flag.turn_round_flag = 0;
-	}
-	
-	// Pitch loop disabled.
-	add_pit = 0.0f;
-	
-	//弧度制赋值并限制
-	yaw_absolute_set_rad = rad_format(yaw_absolute_set_rad + add_yaw);
-	// pit_absolute_set_rad = rad_format(pit_absolute_set_rad + add_pit);
+        if(fabs(rad_format(gimbal_end_angle - yaw_absolute_rad)) < 0.01f)
+            SysPointer()->key_flag.turn_round_flag = 0;
+    }
+    add_pit = 0.0f;
+    yaw_absolute_set_rad = rad_format(yaw_absolute_set_rad + add_yaw);
 }
 
-/**
-	* @brief          自瞄信息更新
-  * @param[in]      NULL
-  * @retval         NULL
-  */
-void gimbal_t::AutoInfoUpdate()
-{
-// 	fp32 auto_error_yaw,auto_error_pit;
-// 	/*****获取相对角度值*****/
-// 	VisionErrorAngleYaw(&auto_error_yaw);
-// 	VisionErrorAnglePit(&auto_error_pit);
-	
-// 	/*****数据处理方式*****/
-// #if Auto_Type == HANDLE_LPF
-// 	//瞄准到目标进行控制
-// 	if( VisionGetIfTarget() )
-// 	{
-// 		//一节低通滤波
-// 		add_yaw = LPF(&yaw_vision_lpf ,0.001,auto_error_yaw,550); //800 812 875 750 843 781 769 687
-// 		add_pit = LPF(&pitch_vision_lpf ,0.001,auto_error_pit,1300);
-		
-// 		//数据异常处理
-// 		if(isnan(add_yaw) || isinf(add_yaw))
-// 		{
-// 			add_yaw = 0.0;
-// 		}
-// 		if(isnan(add_pit) || isinf(add_pit))
-// 		{ 
-// 			add_pit = 0.0;
-// 		}
-// 	}else
-// 	{
-// 		add_yaw = add_pit = 0.0f;
-// 	}
-// #elif Auto_Type == HANDLE_KALMAN
-	
-// #endif
-	
-// 	/*****处理数据后进行限幅处理*****/
-// 	if(SysPointer()->mode == AUTO)  //自瞄模式
-// 	{
-// 		//add值更新并限幅
-// 		add_yaw=AbsoluteControlAddLimit((yaw_absolute_set_rad-yaw_absolute_rad),add_yaw,gimbal_msg.yaw_relative_angle,MAX_YAW_RELATIVE,MIN_YAW_RELATIVE);
-// 	}else if(SysPointer()->mode == SPIN_AUTO)  //小陀螺自瞄模式
-// 	{
-// 		//add值更新，不进行限幅
-// 		add_yaw = SysPointer()->add_yaw;
-// 	}
-	
-// 	//角度值更新及限制
-// 	add_pit=AbsoluteControlAddLimit((pit_absolute_set_rad-pit_absolute_rad),add_pit,gimbal_msg.pit_relative_angle,MAX_PIT_RELATIVE,MIN_PIT_RELATIVE);
-	
-// 	//进行赋值
-// 	yaw_absolute_set_rad = rad_format(yaw_absolute_rad + add_yaw);
-// 	pit_absolute_set_rad = rad_format(pit_absolute_rad + add_pit);
-}
-
-/**
-	* @brief          正常绝对角度控制--正常
-  * @param[in]      NULL
-  * @retval         NULL
-  */
 void gimbal_t::NormalControl()
 {
-	DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
-	fp32 yaw_tor_cmd;
-	EnsureYawDMEnabled(yaw_dm);
-
-	yaw_dm->dm_ctrl_set.mode = mit_mode;
-	yaw_dm->dm_ctrl_set.pos_set = 0.0f;
-	yaw_dm->dm_ctrl_set.vel_set = 0.0f;
-	yaw_dm->dm_ctrl_set.kp_set = 15.0f;
-	yaw_dm->dm_ctrl_set.kd_set = 2.0f;
-	yaw_tor_cmd = yaw_ladrc_fdw.FDW_Calc(yaw_absolute_rad, yaw_absolute_set_rad, yaw_gyro);
-	yaw_tor_cmd *= GIMBAL_YAW_SAFE_TORQUE_SCALE;
-	if (yaw_tor_cmd > GIMBAL_YAW_SAFE_TORQUE_LIMIT)
-	{
-		yaw_tor_cmd = GIMBAL_YAW_SAFE_TORQUE_LIMIT;
-	}
-	else if (yaw_tor_cmd < -GIMBAL_YAW_SAFE_TORQUE_LIMIT)
-	{
-		yaw_tor_cmd = -GIMBAL_YAW_SAFE_TORQUE_LIMIT;
-	}
-	yaw_dm->dm_ctrl_set.tor_set = DMYawApplyDirection(yaw_tor_cmd);
-
-	yaw_motor.DMMotorControl(DMYawCanHandle(), yaw_dm);
-	// pit_motor.DJIMotorControl(&pit_absolute_rad,&pit_absolute_set_rad,&pitch_gyro,OFF_SET);
+    DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
+    fp32 yaw_tor_cmd = 0.0f;
+    // 判断拨杆是否回中
+    const bool_t yaw_idle = (fabs(SysPointer()->add_yaw) <= GIMBAL_YAW_IDLE_INPUT_EPS) ? TRUE : FALSE;
+    if (yaw_idle == TRUE)
+    {
+        // 拨杆回中，采用MIT模式位置控制回INIT_YAW_SET
+        yaw_dm->dm_ctrl_set.mode = mit_mode;
+        yaw_dm->dm_ctrl_set.pos_set = INIT_YAW_SET;
+        yaw_dm->dm_ctrl_set.vel_set = 1.0f;
+        yaw_dm->dm_ctrl_set.kp_set = 10.0f;
+        yaw_dm->dm_ctrl_set.kd_set = 5.0f;
+        yaw_dm->dm_ctrl_set.tor_set = 0.0f;
+    }
+    else
+    {
+        // 拨杆拨动，MIT模式扭矩控制
+        yaw_dm->dm_ctrl_set.mode = mit_mode;
+        yaw_dm->dm_ctrl_set.pos_set = 0.0f;
+        yaw_dm->dm_ctrl_set.vel_set = 0.0f;
+        yaw_dm->dm_ctrl_set.kp_set = 0.0f;
+        yaw_dm->dm_ctrl_set.kd_set = 0.0f;
+		if (fabs(yaw_absolute_set_rad - yaw_absolute_rad) > 0.01f)
+		{
+			// 向右拨动摇杆时云台转矩为负，向左拨动时为正
+			yaw_tor_cmd = (SysPointer()->add_yaw > 0) ? GIMBAL_YAW_SAFE_TORQUE_LIMIT : -GIMBAL_YAW_SAFE_TORQUE_LIMIT;
+			if (yaw_absolute_rad >= MAX_YAW_RELATIVE)
+				yaw_tor_cmd = 0.0f;
+			if (yaw_absolute_rad <= MIN_YAW_RELATIVE)
+				yaw_tor_cmd = 0.0f;
+		}
+		else
+		{
+			yaw_tor_cmd = 0.0f;
+		}
+        yaw_dm->dm_ctrl_set.tor_set = DMYawApplyDirection(yaw_tor_cmd);
+    }
+    yaw_motor.DMMotorControl(DMYawCanHandle(), yaw_dm);
+    // pit_motor.DJIMotorControl(&pit_absolute_rad,&pit_absolute_set_rad,&pitch_gyro,OFF_SET);
 }
 
 /**
@@ -525,17 +499,8 @@ void gimbal_t::NormalControl()
 void gimbal_t::ZeroForceControl()
 {
 	DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
-	EnsureYawDMEnabled(yaw_dm);
-
-	// Keep DM motor enabled: send zero-torque MIT command instead of disable frame.
-	yaw_dm->dm_ctrl_set.mode = mit_mode;
-	yaw_dm->dm_ctrl_set.pos_set = 0.0f;
-	yaw_dm->dm_ctrl_set.vel_set = 0.0f;
-	yaw_dm->dm_ctrl_set.kp_set = 15.0f;
-	yaw_dm->dm_ctrl_set.kd_set = 2.0f;
-	yaw_dm->dm_ctrl_set.tor_set = 0.0f;
-
-	yaw_motor.DMMotorControl(DMYawCanHandle(), yaw_dm);
+	yaw_motor.DMMotorZeroForce(DMYawCanHandle(), yaw_dm);
+	yaw_dm_enabled = FALSE;
 	// pit_motor.MotorZeroForce();
 }
 
@@ -546,6 +511,22 @@ void gimbal_t::ZeroForceControl()
   */
 void gimbal_t::RelativeControl()
 {
+	if (SysPointer()->mode == INIT_MODE)
+	{
+		DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
+
+		// During INIT, directly command DM internal position loop to INIT_YAW_SET.
+		yaw_dm->dm_ctrl_set.mode = mit_mode;
+		yaw_dm->dm_ctrl_set.pos_set = INIT_YAW_SET;
+		yaw_dm->dm_ctrl_set.vel_set = 1.0f;
+		yaw_dm->dm_ctrl_set.kp_set = 40.0f;
+		yaw_dm->dm_ctrl_set.kd_set = 1.0f;
+		yaw_dm->dm_ctrl_set.tor_set = 0.0f;
+
+		yaw_motor.DMMotorControl(DMYawCanHandle(), yaw_dm);
+		return;
+	}
+
 	//正常相对角度控制角速度应该也使用电机的，不使用陀螺仪的角速度
 	yaw_relative_set += add_yaw;
 	if (yaw_relative_set > MAX_YAW_RELATIVE)
@@ -560,7 +541,6 @@ void gimbal_t::RelativeControl()
 	
 	DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
 	fp32 yaw_tor_cmd;
-	EnsureYawDMEnabled(yaw_dm);
 
 	yaw_dm->dm_ctrl_set.mode = mit_mode;
 	yaw_dm->dm_ctrl_set.pos_set = 0.0f;
@@ -683,6 +663,7 @@ void gimbal_t::JudgeInitState()
   {
     init_stop_time = 0;
     init_time = 0;
+		yaw_home_absolute_rad = yaw_absolute_rad;
 #if !GIMBAL_PHOTOGATE_HOME_ENABLE
 	// No photogate on power-on: freeze absolute-loop reference at current IMU yaw.
 	yaw_absolute_start_rad = yaw_absolute_rad;
@@ -700,6 +681,10 @@ void gimbal_t::JudgeInitState()
   }
 }
 
+void gimbal_t::AutoInfoUpdate()
+{
+    // 空实现，防止链接错误
+}
 //LKMotorInstance *GetLKPointer()
 //{
 //	return &gimbal.test_motor;

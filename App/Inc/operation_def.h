@@ -16,10 +16,10 @@
 #define CHASSIS_Y_CHANNEL 2
 
 // 可改灵敏度：鼠标位移到角速度/角度增量映射（按1ms主循环调参）
-#define YAW_MOUSE_SEN   0.00005f
-#define PITCH_MOUSE_SEN 0.00005f
+#define YAW_MOUSE_SEN   0.00008f
+#define PITCH_MOUSE_SEN 0.00008f
 // 可改灵敏度：遥控器通道值到角速度/角度增量映射
-#define YAW_RC_SEN     0.000005f
+#define YAW_RC_SEN     0.00001f
 #define PITCH_RC_SEN  -0.00000222f //0.005
 
 //可改灵敏度

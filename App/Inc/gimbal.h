@@ -33,15 +33,15 @@
 #define GIMBAL_POWERON_USE_PHOTOGATE          0
 #define GIMBAL_SPIN_EXIT_REHOME_USE_PHOTOGATE 0
 // 上电不找光电门时，使用达妙绝对编码角作为回中参考（按机械安装标定）
-#define GIMBAL_POWERON_ENCODER_CENTER_RAD    -2.3f
+#define GIMBAL_POWERON_ENCODER_CENTER_RAD   0.0f
 
 // 上电回中标定调试打印
 #define GIMBAL_CENTER_DEBUG_PRINT_ENABLE      1
 #define GIMBAL_CENTER_DEBUG_PRINT_PERIOD_MS   100U
 #define GIMBAL_CENTER_DEBUG_UART_PORT         1
 //初始角度值设定
-#define INIT_YAW_SET    -1.8f
-#define INIT_PITCH_SET  0.0f
+#define INIT_YAW_SET    -0.227f
+#define GIMBAL_YAW_IDLE_INPUT_EPS 0.00001f
 // Yaw sign convention for both control input and chassis follow compensation.
 // Set to -1.0f if installed direction is opposite.
 #define GIMBAL_YAW_SIGN  1.0f
@@ -53,7 +53,7 @@
 //云台正常控制参数
 #define YAW_NORMAL_WC 23
 #define YAW_NORMAL_B0 0.007f
-#define YAW_NORMAL_WO 90
+#define YAW_NORMAL_WO 90.
 #define YAW_NORMAL_W  25
 #define YAW_NORMAL_GAIN 1
 
@@ -117,7 +117,6 @@ class gimbal_t
 		Test_Module_t gimbal_test;
 		/*****YAW轴、PIT轴电机实例*****/
 		DMMotorInstance yaw_motor;
-		DJIMotorInstance height_motor;
 
 		/*****信息实例*****/
 		Gimbal_Pub_Msg_t gimbal_msg;
@@ -135,6 +134,7 @@ class gimbal_t
 		void RelativeControl();
 		void ZeroForceControl();
 		fp32 yaw_absolute_start_rad;
+		fp32 yaw_home_absolute_rad;
 
 	private:
 		LADRC_FDW_t yaw_ladrc_fdw;

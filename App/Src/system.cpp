@@ -81,7 +81,7 @@ static void SystemDebugPrint(void)
 system_t::system_t()
 {
 	/*****初始模式设置*****/
-	sys_pub.mode = INIT_MODE;
+	sys_pub.mode = ZERO_FORCE_MOVE;
 	sys_pub.fir_mode = FORBID_FIRE;
 	sys_pub.stir_mode = NO_MOVE;
 	sys_pub.engineer_mode = KEYBOARD;
@@ -132,8 +132,6 @@ void SystemTask()
   */
 void system_t::RobotModeSet()
 {
-	static bool_t boot_auto_calibrate_pending = FALSE;
-
 #if !SYSTEM_ARM_CALIBRATE_PIPELINE_ENABLE
 	if (sys_pub.engineer_mode == CALIBRATE)
 	{
@@ -142,23 +140,6 @@ void system_t::RobotModeSet()
 		sys_pub.engineer_mode = KEYBOARD;
 	}
 #endif
-
-	if (boot_auto_calibrate_pending == TRUE && sys_pub.engineer_mode != CALIBRATE)
-	{
-		boot_auto_calibrate_pending = FALSE;
-	}
-
-	if (boot_auto_calibrate_pending == TRUE)
-	{
-		sys_pub.mode = INIT_MODE;
-		sys_pub.engineer_mode = CALIBRATE;
-		if (last_mode != sys_pub.mode)
-		{
-			sys_pub.change_mode_flag = 1;
-		}
-		last_mode = sys_pub.mode;
-		return;
-	}
 
 	if (sys_pub.engineer_mode == CALIBRATE)
 	{
