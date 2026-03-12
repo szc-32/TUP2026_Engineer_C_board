@@ -405,20 +405,12 @@ void gimbal_t::OperationInfoUpdate()
         }
         else
         {
-            // 拨杆拨动：持续输出扭矩，直到限幅
-            fp32 next_angle = yaw_absolute_set_rad + SysPointer()->add_yaw;
-            if (next_angle > MAX_YAW_RELATIVE)
-            {
-                yaw_absolute_set_rad = MAX_YAW_RELATIVE;
-            }
-            else if (next_angle < MIN_YAW_RELATIVE)
-            {
-                yaw_absolute_set_rad = MIN_YAW_RELATIVE;
-            }
-            else
-            {
-                yaw_absolute_set_rad = next_angle;
-            }
+			fp32 next_relative_angle;
+
+			// NORMAL 模式下限幅应基于云台相对底盘的角度，而不是陀螺仪世界绝对角。
+			next_relative_angle = gimbal_msg.yaw_relative_angle + SysPointer()->add_yaw;
+			next_relative_angle = fp32_constrain(next_relative_angle, MIN_YAW_RELATIVE, MAX_YAW_RELATIVE);
+			yaw_absolute_set_rad = rad_format(yaw_absolute_start_rad + next_relative_angle);
             add_yaw = 0.0f; // 由MIT模式扭矩控制
         }
     }
@@ -452,6 +444,7 @@ void gimbal_t::NormalControl()
 {
     DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
     fp32 yaw_tor_cmd = 0.0f;
+	const fp32 yaw_relative_angle = gimbal_msg.yaw_relative_angle;
     // 判断拨杆是否回中
     const bool_t yaw_idle = (fabs(SysPointer()->add_yaw) <= GIMBAL_YAW_IDLE_INPUT_EPS) ? TRUE : FALSE;
     if (yaw_idle == TRUE)
@@ -460,8 +453,8 @@ void gimbal_t::NormalControl()
         yaw_dm->dm_ctrl_set.mode = mit_mode;
         yaw_dm->dm_ctrl_set.pos_set = INIT_YAW_SET;
         yaw_dm->dm_ctrl_set.vel_set = 1.0f;
-        yaw_dm->dm_ctrl_set.kp_set = 10.0f;
-        yaw_dm->dm_ctrl_set.kd_set = 5.0f;
+        yaw_dm->dm_ctrl_set.kp_set = 13.50f;
+        yaw_dm->dm_ctrl_set.kd_set = 4.50f;
         yaw_dm->dm_ctrl_set.tor_set = 0.0f;
     }
     else
@@ -476,9 +469,9 @@ void gimbal_t::NormalControl()
 		{
 			// 向右拨动摇杆时云台转矩为负，向左拨动时为正
 			yaw_tor_cmd = (SysPointer()->add_yaw > 0) ? GIMBAL_YAW_SAFE_TORQUE_LIMIT : -GIMBAL_YAW_SAFE_TORQUE_LIMIT;
-			if (yaw_absolute_rad >= MAX_YAW_RELATIVE)
+			if (SysPointer()->add_yaw > 0.0f && yaw_relative_angle >= MAX_YAW_RELATIVE)
 				yaw_tor_cmd = 0.0f;
-			if (yaw_absolute_rad <= MIN_YAW_RELATIVE)
+			if (SysPointer()->add_yaw < 0.0f && yaw_relative_angle <= MIN_YAW_RELATIVE)
 				yaw_tor_cmd = 0.0f;
 		}
 		else

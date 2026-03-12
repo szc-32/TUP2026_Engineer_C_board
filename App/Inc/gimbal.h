@@ -40,7 +40,7 @@
 #define GIMBAL_CENTER_DEBUG_PRINT_PERIOD_MS   100U
 #define GIMBAL_CENTER_DEBUG_UART_PORT         1
 //初始角度值设定
-#define INIT_YAW_SET    -0.227f
+#define INIT_YAW_SET    -0.305f
 #define GIMBAL_YAW_IDLE_INPUT_EPS 0.00001f
 // Yaw sign convention for both control input and chassis follow compensation.
 // Set to -1.0f if installed direction is opposite.
