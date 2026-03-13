@@ -246,9 +246,9 @@ void system_t::RobotModeSet()
 		}
 		else if(switch_is_down(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_mid(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
 		{ 
-			//左下右中 正常控制模式-键盘同时可以控制
-			sys_pub.mode = NORMAL;
-			sys_pub.engineer_mode = STOP_POSITION
+			//左下右中 相对角度控制模式
+			sys_pub.mode = RELATIVE_ANGLE;
+			sys_pub.engineer_mode = INIT;
 			;
 		}
 		else if(custom_controller_mode)

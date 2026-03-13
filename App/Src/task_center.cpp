@@ -94,8 +94,8 @@ void MainTask(void const *pvParameters)                //主任务
 	{
 		//系统任务
 		SystemTask();
-		// MovingPointer()->Get_info(); // Disable arm behavior pipeline during chassis/gimbal-only debug.
-		// MovingPointer()->Get_set();  // Disable arm behavior pipeline during chassis/gimbal-only debug.
+		MovingPointer()->Get_info();
+		MovingPointer()->Get_set();
 //		TEST_FUNC_TIME(gimbal_test,GimbalTask());
 		//云台任务
 		GimbalTask();
@@ -106,7 +106,7 @@ void MainTask(void const *pvParameters)                //主任务
 		// LiftingTask();   // Disable during chassis/gimbal-only debug.
 		// SuctionCupTask(); // Disable during chassis/gimbal-only debug.
 		// GripperTask();   // Disable during chassis/gimbal-only debug.
-		// ArmControlTask(); // Disable arm control loop while debugging chassis + gimbal only.
+		ArmControlTask();
 
 		vTaskDelayUntil(&currentTime,1);
 	}

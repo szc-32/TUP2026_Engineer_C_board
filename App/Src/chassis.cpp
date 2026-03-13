@@ -86,11 +86,15 @@ void chassis_t::ChassisInit()
   const static fp32 chassis_yaw_pid[3] = {CHASSIS_MOTOR_YAW_PID_KP,CHASSIS_MOTOR_YAW_PID_KI,CHASSIS_MOTOR_YAW_PID_KD};  
 	chassis_angle_pid.Init(PID_POSITION,chassis_yaw_pid, CHASSIS_MOTOR_YAW_PID_MAX_OUT, CHASSIS_MOTOR_YAW_PID_MAX_IOUT);
 	
-	const static fp32 motor_speed_pid[3] ={CHASSIS_MOTOR_SPEED_PID_KP, CHASSIS_MOTOR_SPEED_PID_KI, CHASSIS_MOTOR_SPEED_PID_KD};
+	const static fp32 motor_speed_pid_lf[3] ={CHASSIS_MOTOR_SPEED_PID_LF_KP, CHASSIS_MOTOR_SPEED_PID_LF_KI, CHASSIS_MOTOR_SPEED_PID_LF_KD};
+	const static fp32 motor_speed_pid_lb[3] ={CHASSIS_MOTOR_SPEED_PID_LB_KP, CHASSIS_MOTOR_SPEED_PID_LB_KI, CHASSIS_MOTOR_SPEED_PID_LB_KD};
+	const static fp32 motor_speed_pid_rb[3] ={CHASSIS_MOTOR_SPEED_PID_RB_KP, CHASSIS_MOTOR_SPEED_PID_RB_KI, CHASSIS_MOTOR_SPEED_PID_RB_KD};
+	const static fp32 motor_speed_pid_rf[3] ={CHASSIS_MOTOR_SPEED_PID_RF_KP, CHASSIS_MOTOR_SPEED_PID_RF_KI, CHASSIS_MOTOR_SPEED_PID_RF_KD};
+	const fp32 *motor_speed_pid[4] = {motor_speed_pid_lf, motor_speed_pid_lb, motor_speed_pid_rb, motor_speed_pid_rf};
 	const static fp32 motor_current_pid[3] = {10,0,2};
 	for(int i=0;i<=3;i++)
    {
-	    chassis_motor_speed_pid[i].Init(PID_POSITION,motor_speed_pid,M3508_MOTOR_SPEED_PID_MAX_OUT, M3508_MOTOR_SPEED_PID_MAX_IOUT);
+	    chassis_motor_speed_pid[i].Init(PID_POSITION,motor_speed_pid[i],M3508_MOTOR_SPEED_PID_MAX_OUT, M3508_MOTOR_SPEED_PID_MAX_IOUT);
 		chassis_current_pid[i].Init(PID_POSITION,motor_current_pid,16384, 1000);
 	}
 	updata=1;
@@ -121,10 +125,10 @@ void chassis_t::ChassisInit()
 	}
 		
 	/*****控制器初始化*****/
-	chassis.chassis_motor[LF].controller.speed_PID.Init(PID_POSITION,motor_speed_pid,NULL,M3508_MOTOR_SPEED_PID_MAX_IOUT);
-	chassis.chassis_motor[LB].controller.speed_PID.Init(PID_POSITION,motor_speed_pid,NULL,M3508_MOTOR_SPEED_PID_MAX_IOUT);
-	chassis.chassis_motor[RB].controller.speed_PID.Init(PID_POSITION,motor_speed_pid,NULL,M3508_MOTOR_SPEED_PID_MAX_IOUT);
-	chassis.chassis_motor[RF].controller.speed_PID.Init(PID_POSITION,motor_speed_pid,NULL,M3508_MOTOR_SPEED_PID_MAX_IOUT);
+	chassis.chassis_motor[LF].controller.speed_PID.Init(PID_POSITION,motor_speed_pid_lf,NULL,M3508_MOTOR_SPEED_PID_MAX_IOUT);
+	chassis.chassis_motor[LB].controller.speed_PID.Init(PID_POSITION,motor_speed_pid_lb,NULL,M3508_MOTOR_SPEED_PID_MAX_IOUT);
+	chassis.chassis_motor[RB].controller.speed_PID.Init(PID_POSITION,motor_speed_pid_rb,NULL,M3508_MOTOR_SPEED_PID_MAX_IOUT);
+	chassis.chassis_motor[RF].controller.speed_PID.Init(PID_POSITION,motor_speed_pid_rf,NULL,M3508_MOTOR_SPEED_PID_MAX_IOUT);
 #endif
 }
 
@@ -296,7 +300,7 @@ void chassis_t::ControlSet()
 			//平移设置
 			NoFollowTranslationSet(); 
 			//旋转设置
-			robot_wz_set =  -CHASSIS_WZ_RC_SEN *	SysPointer()->add_yaw / YAW_RC_SEN;
+			robot_wz_set = CHASSIS_WZ_RC_SEN * SysPointer()->add_yaw / YAW_RC_SEN;
 			break;
 		default:
 			break;

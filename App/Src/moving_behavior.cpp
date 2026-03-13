@@ -674,16 +674,16 @@ void moving_t::Get_info()
   last_sys_behaviour = sys_behaviour;
   sys_behaviour = SysPointer()->engineer_mode;
 
-  front_l_motor.motor_angle = LiftingPointer()->lifting_motor_angle[FRONT_L];
-  front_r_motor.motor_angle = LiftingPointer()->lifting_motor_angle[FRONT_R];
-  up_l_motor.motor_angle = LiftingPointer()->lifting_motor_angle[UP_L];
-  up_r_motor.motor_angle = LiftingPointer()->lifting_motor_angle[UP_R];
-  side_motor.motor_angle = LiftingPointer()->lifting_motor_angle[SIDE];
+//   front_l_motor.motor_angle = LiftingPointer()->lifting_motor_angle[FRONT_L];
+//   front_r_motor.motor_angle = LiftingPointer()->lifting_motor_angle[FRONT_R];
+//   up_l_motor.motor_angle = LiftingPointer()->lifting_motor_angle[UP_L];
+//   up_r_motor.motor_angle = LiftingPointer()->lifting_motor_angle[UP_R];
+//   side_motor.motor_angle = LiftingPointer()->lifting_motor_angle[SIDE];
 
-  yaw_f_motor.motor_angle = SuctionPointer()->suction_motor_angle[YAW_F];
-  yaw_b_motor.motor_angle = SuctionPointer()->suction_motor_angle[YAW_B];
-  pitch_motor.motor_angle = SuctionPointer()->suction_motor_angle[PITCH];
-  roll_motor.motor_angle = SuctionPointer()->suction_motor_angle[ROLL];
+//   yaw_f_motor.motor_angle = SuctionPointer()->suction_motor_angle[YAW_F];
+//   yaw_b_motor.motor_angle = SuctionPointer()->suction_motor_angle[YAW_B];
+//   pitch_motor.motor_angle = SuctionPointer()->suction_motor_angle[PITCH];
+//   roll_motor.motor_angle = SuctionPointer()->suction_motor_angle[ROLL];
 
 }
 

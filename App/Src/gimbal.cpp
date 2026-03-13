@@ -504,16 +504,32 @@ void gimbal_t::ZeroForceControl()
   */
 void gimbal_t::RelativeControl()
 {
+	DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
+	// Re-arm enable in case mode transition skipped the one-shot enable path.
+	EnsureYawDMEnabled(yaw_dm);
+
 	if (SysPointer()->mode == INIT_MODE)
 	{
-		DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
-
 		// During INIT, directly command DM internal position loop to INIT_YAW_SET.
 		yaw_dm->dm_ctrl_set.mode = mit_mode;
 		yaw_dm->dm_ctrl_set.pos_set = INIT_YAW_SET;
 		yaw_dm->dm_ctrl_set.vel_set = 1.0f;
 		yaw_dm->dm_ctrl_set.kp_set = 40.0f;
 		yaw_dm->dm_ctrl_set.kd_set = 1.0f;
+		yaw_dm->dm_ctrl_set.tor_set = 0.0f;
+
+		yaw_motor.DMMotorControl(DMYawCanHandle(), yaw_dm);
+		return;
+	}
+
+	if (SysPointer()->mode == RELATIVE_ANGLE)
+	{
+		// In RELATIVE_ANGLE, hold fixed yaw target with DM internal position loop.
+		yaw_dm->dm_ctrl_set.mode = mit_mode;
+		yaw_dm->dm_ctrl_set.pos_set = INIT_YAW_SET;
+		yaw_dm->dm_ctrl_set.vel_set = 1.0f;
+		yaw_dm->dm_ctrl_set.kp_set = 13.50f;
+		yaw_dm->dm_ctrl_set.kd_set = 4.50f;
 		yaw_dm->dm_ctrl_set.tor_set = 0.0f;
 
 		yaw_motor.DMMotorControl(DMYawCanHandle(), yaw_dm);
@@ -532,7 +548,6 @@ void gimbal_t::RelativeControl()
 	}
 	// pit_relative_set=pit_motor.MotorWorkSpaceLimit(pit_relative_set,add_pit,MAX_PIT_RELATIVE,MIN_PIT_RELATIVE);
 	
-	DM_motor_t *yaw_dm = &yaw_motor.dm_motor[Motor1];
 	fp32 yaw_tor_cmd;
 
 	yaw_dm->dm_ctrl_set.mode = mit_mode;
