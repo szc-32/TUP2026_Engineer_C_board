@@ -926,6 +926,11 @@
               <FilePath>..\App\Src\arm.cpp</FilePath>
             </File>
             <File>
+              <FileName>arm_kinematics.cpp</FileName>
+              <FileType>8</FileType>
+              <FilePath>..\App\Src\arm_kinematics.cpp</FilePath>
+            </File>
+            <File>
               <FileName>photogate.cpp</FileName>
               <FileType>8</FileType>
               <FilePath>..\App\Src\photogate.cpp</FilePath>

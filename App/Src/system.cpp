@@ -206,7 +206,7 @@ void system_t::RobotModeSet()
 		if (switch_is_down(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_mid(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
 		{
 			sys_pub.mode = RELATIVE_ANGLE;
-			sys_pub.engineer_mode = STOP_POSITION;
+			sys_pub.engineer_mode = INIT;
 			sys_pub.change_mode_flag = 1;
 			last_mode = sys_pub.mode;
 			return;
@@ -249,13 +249,12 @@ void system_t::RobotModeSet()
 			//左下右中 相对角度控制模式
 			sys_pub.mode = RELATIVE_ANGLE;
 			sys_pub.engineer_mode = INIT;
-			;
 		}
 		else if(custom_controller_mode)
 		{  
 			//左下右上 接入新的自定义控制器逻辑（USER）
 			sys_pub.mode = RELATIVE_ANGLE;
-			sys_pub.engineer_mode = USER;
+			sys_pub.engineer_mode = INIT;
 		}
 		
 		/**********初始化模式判断**********/
@@ -278,32 +277,32 @@ void system_t::RobotModeSet()
 		else if (switch_is_mid(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_mid(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
 		{
 			//左中右中 小陀螺模式
-			sys_pub.mode = SPIN;
+			sys_pub.mode = ZERO_FORCE_MOVE;
 			sys_pub.engineer_mode = KEYBOARD;
 		}
 		else if (switch_is_mid(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_up(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
 		{
 			//左中右上 六轴机械臂归位模式
-			sys_pub.mode = NORMAL;
+			sys_pub.mode = RELATIVE_ANGLE;
 			sys_pub.engineer_mode = INIT;
 		}
 
 		if (switch_is_up(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_down(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
 		{
-			//左上右下 六轴机械臂平移控制模式（末端XYZ）
-			sys_pub.mode = NORMAL;
+			//左上右下 六轴机械臂后两轴关节控制模式
+			sys_pub.mode = RELATIVE_ANGLE;
 			sys_pub.engineer_mode = KEYBOARD;
 		}
 		else if (switch_is_up(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_mid(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
 		{
-			//左上右中 六轴机械臂转动控制模式（末端pitch/roll + J4）
-			sys_pub.mode = NORMAL;
+			//左上右中 六轴机械臂前四轴关节控制模式
+			sys_pub.mode = RELATIVE_ANGLE;
 			sys_pub.engineer_mode = KEYBOARD;
 		}
 		else if (switch_is_up(system_rc_ctrl->rc.s[LEFT_CHANNEL]) && switch_is_up(system_rc_ctrl->rc.s[RIGTH_CHANNEL]))
 		{
 			//左上右上 键盘控制模式
-			sys_pub.mode = NORMAL;
+			sys_pub.mode = ZERO_FORCE_MOVE;
 			sys_pub.engineer_mode = KEYBOARD;
 		}
 

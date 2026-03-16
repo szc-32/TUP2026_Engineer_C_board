@@ -137,7 +137,7 @@ class moving_t
 	
 	void Init();
     void Get_info();
-	void Get_set();
+	
 	
 	void main_moving_user(float front_cm,float side_cm,float lifting_cm,float speed);
 	void arm_moving_user(float yaw_f_rad,float yaw_b_rad,float pitch_rad,float roll_rad,float speed);

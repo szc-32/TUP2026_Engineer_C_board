@@ -12,7 +12,7 @@
 #define KP_MIN 0.0f
 #define KP_MAX 500.0f
 #define KD_MIN 0.0f
-#define KD_MAX 5.0f
+#define KD_MAX 50.0f
 
 #define TOTAL_DMMOTOR_SUM 1
 

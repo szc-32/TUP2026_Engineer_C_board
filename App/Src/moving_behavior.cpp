@@ -4,6 +4,7 @@
 #include "remote_control.h"
 #include "referee_data.h"
 #include "buzzer.h"
+#include "DMmotor.h"
 
 // DM机械臂自定义控制器增益（集中配置）
 #define DM_ARM_CUSTOM_POS_GAIN            0.0008f
@@ -21,6 +22,8 @@
 #define DM_ARM_RC_PITCH_GAIN               0.00001f
 #define DM_ARM_RC_ROLL_GAIN                0.00001f
 #define DM_ARM_RC_J4_GAIN                  0.00001f
+#define DM_ARM_RC_JOINT_INC_GAIN_J1_J4     0.0000015f
+#define DM_ARM_RC_JOINT_INC_GAIN_J5_J6     0.0000018f
 #define DM_ARM_TARGET_PITCH_MIN           -1.57f
 #define DM_ARM_TARGET_PITCH_MAX            1.57f
 #define DM_ARM_TARGET_ROLL_MIN            -1.57f
@@ -43,6 +46,8 @@
 
 static bool_t g_dm_arm_target_inited = FALSE;
 static ArmPose_t g_dm_arm_target_pose = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+static bool_t g_dm_arm_joint_target_inited = FALSE;
+static fp32 g_dm_arm_joint_target_q[ARM_DOF] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 static fp32 g_dm_arm_locked_pitch = 0.0f;
 static fp32 g_dm_arm_locked_roll = 0.0f;
 static bool_t g_dm_arm_custom_input_active = FALSE;
@@ -81,6 +86,9 @@ static fp32 DMArmLowPass(fp32 prev, fp32 input, fp32 alpha);
 static fp32 DMArmClampStep(fp32 delta, fp32 step_max);
 static void DMArmClampTargetPose(ArmPose_t *pose);
 static void DMArmApplyTargetSlew(const ArmPose_t *prev_pose, ArmPose_t *target_pose);
+static void DMArmResetJointTarget(void);
+static void DMArmEnsureJointTargetInit(void);
+static bool_t DMArmApplyRCJointIncrementMode(void);
 
 // 维持持续鸣叫（等效于 BuzzerWarn(0, 0, psc, 10000)）
 static void CalibrateBeepKeepOn(void)
@@ -94,6 +102,7 @@ static void CalibrateBeepKeepOn(void)
 
 static void CalibrateBeepStart(uint16_t total_tick, uint16_t on_tick, uint16_t period_tick, uint16_t psc)
 {
+	// 配置一段蜂鸣模板参数，实际输出由 CalibrateBeepUpdate 在周期任务中推进。
 	g_cali_beep_total_tick = total_tick;
 	g_cali_beep_tick = 0;
 	g_cali_beep_on_tick = on_tick;
@@ -103,6 +112,7 @@ static void CalibrateBeepStart(uint16_t total_tick, uint16_t on_tick, uint16_t p
 
 static void CalibrateBeepUpdate(void)
 {
+	// 标定提示音状态机：按 total/on/period 生成“持续音或脉冲音”。
 	if (g_cali_beep_tick >= g_cali_beep_total_tick)
 	{
 		return;
@@ -142,6 +152,7 @@ static fp32 DMArmLegacyDegToEcd(fp32 degree)
 
 static void DMArmLegacyEndEnsureInit(void)
 {
+	// 旧末端轴控制初始化：把当前反馈角作为控制中心，避免切入时突跳。
 	if (g_legacy_end_axis_inited == TRUE)
 	{
 		return;
@@ -163,6 +174,7 @@ static void DMArmLegacyEndEnsureInit(void)
 
 static void DMArmLegacyEndApplyDelta(fp32 pitch_delta_rad, fp32 roll_delta_rad)
 {
+	// 将末端 pitch/roll 增量映射到旧轴目标，并以当前中心做软限幅。
 	moving_t *mv = MovingPointer();
 	if (mv == 0)
 	{
@@ -188,6 +200,7 @@ static void DMArmLegacyEndApplyDelta(fp32 pitch_delta_rad, fp32 roll_delta_rad)
 
 static void DMArmLegacyEndUpdateFromLatestCustom(void)
 {
+	// 从自定义控制器最新帧读取姿态增量，更新旧末端轴目标。
 	ext_robot_interactive_data_t custom_ctrl_data;
 	if (RefereeGetLatestCustomControllerData(&custom_ctrl_data) == TRUE)
 	{
@@ -198,6 +211,7 @@ static void DMArmLegacyEndUpdateFromLatestCustom(void)
 
 static void DMArmLegacyJ4EnsureInit(void)
 {
+	// 旧 J4 通道初始化：记录切入瞬间角度作为增量中心。
 	if (g_legacy_j4_axis_inited == TRUE)
 	{
 		return;
@@ -216,6 +230,7 @@ static void DMArmLegacyJ4EnsureInit(void)
 
 static void DMArmLegacyJ4ApplyDelta(fp32 j4_delta_rad)
 {
+	// J4 增量映射与限幅，防止连续叠加导致目标漂移失控。
 	moving_t *mv = MovingPointer();
 	if (mv == 0)
 	{
@@ -249,6 +264,7 @@ void DMArmMasterFKLoadDefaultTemplate(void)
 
 static void DMArmMasterFKEnsureInit(void)
 {
+	// 主控 FK 一次性初始化：绑定轴配置、DH 与机械臂求解器约定。
 	if (g_master_fk_inited == TRUE)
 	{
 		return;
@@ -434,6 +450,7 @@ static fp32 DMArmClampValue(fp32 value, fp32 low, fp32 high)
 
 static void DMArmClampTargetPose(ArmPose_t *pose)
 {
+	// 末端目标软限幅：约束 XYZ 与 yaw 在安全工作区。
 	if (pose == 0)
 	{
 		return;
@@ -446,6 +463,7 @@ static void DMArmClampTargetPose(ArmPose_t *pose)
 
 static void DMArmApplyTargetSlew(const ArmPose_t *prev_pose, ArmPose_t *target_pose)
 {
+	// 目标斜率限制：限制单周期步长，降低逆解抖动与电机突变。
 	if ((prev_pose == 0) || (target_pose == 0))
 	{
 		return;
@@ -456,8 +474,93 @@ static void DMArmApplyTargetSlew(const ArmPose_t *prev_pose, ArmPose_t *target_p
 	target_pose->yaw = prev_pose->yaw + DMArmClampStep(target_pose->yaw - prev_pose->yaw, DM_ARM_SLEW_YAW_STEP_MAX);
 }
 
+static void DMArmResetJointTarget(void)
+{
+	g_dm_arm_joint_target_inited = FALSE;
+}
+
+static void DMArmEnsureJointTargetInit(void)
+{
+	if (g_dm_arm_joint_target_inited == TRUE)
+	{
+		return;
+	}
+
+	if (ArmControlGetJointFeedbackQ(g_dm_arm_joint_target_q) == FALSE)
+	{
+		const fp32 *home_q = ArmGetHomeQ();
+		for (uint8_t i = 0; i < ARM_DOF; i++)
+		{
+			g_dm_arm_joint_target_q[i] = home_q[i];
+		}
+	}
+
+	g_dm_arm_joint_target_inited = TRUE;
+}
+
+static bool_t DMArmApplyRCJointIncrementMode(void)
+{
+	const bool_t rc_j1_j4_mode =
+		switch_is_up(rc_ctrl.rc.s[1]) && switch_is_mid(rc_ctrl.rc.s[0]);
+	const bool_t rc_j5_j6_mode =
+		switch_is_up(rc_ctrl.rc.s[1]) && switch_is_down(rc_ctrl.rc.s[0]);
+
+	if ((rc_j1_j4_mode == FALSE) && (rc_j5_j6_mode == FALSE))
+	{
+		return FALSE;
+	}
+
+	DMArmEnsureJointTargetInit();
+
+	fp32 q_min[ARM_DOF];
+	fp32 q_max[ARM_DOF];
+	ArmGetSolver()->GetJointLimit(q_min, q_max);
+
+	if (rc_j1_j4_mode == TRUE)
+	{
+		const fp32 ch_in[4] = {
+			DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[0], DM_ARM_RC_STICK_DEADZONE),
+			DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[1], DM_ARM_RC_STICK_DEADZONE),
+			DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[2], DM_ARM_RC_STICK_DEADZONE),
+			DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[3], DM_ARM_RC_STICK_DEADZONE)
+		};
+
+		// J4已切换为GM6020：左上右中模式下仅J1~J3走DM关节链，J4单独走GM位置保持链。
+		for (uint8_t i = 0; i < 3; i++)
+		{
+			g_dm_arm_joint_target_q[i] += ch_in[i] * DM_ARM_RC_JOINT_INC_GAIN_J1_J4;
+			g_dm_arm_joint_target_q[i] = DMArmClampValue(g_dm_arm_joint_target_q[i], q_min[i], q_max[i]);
+		}
+
+		DMArmLegacyJ4ApplyDelta(ch_in[3] * DM_ARM_RC_JOINT_INC_GAIN_J1_J4);
+	}
+	else
+	{
+		const fp32 ch_j5 = DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[0], DM_ARM_RC_STICK_DEADZONE);
+		const fp32 ch_j6 = DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[1], DM_ARM_RC_STICK_DEADZONE);
+
+		g_dm_arm_joint_target_q[4] += ch_j5 * DM_ARM_RC_JOINT_INC_GAIN_J5_J6;
+		g_dm_arm_joint_target_q[5] += ch_j6 * DM_ARM_RC_JOINT_INC_GAIN_J5_J6;
+		g_dm_arm_joint_target_q[4] = DMArmClampValue(g_dm_arm_joint_target_q[4], q_min[4], q_max[4]);
+		g_dm_arm_joint_target_q[5] = DMArmClampValue(g_dm_arm_joint_target_q[5], q_min[5], q_max[5]);
+	}
+
+	// 摇杆回死区后不再叠加增量，但持续下发目标，实现位置环保持当前弧度。
+	if (rc_j1_j4_mode == TRUE)
+	{
+		ArmControlHoldInitJointQ(g_dm_arm_joint_target_q, 0.0f);
+	}
+	else
+	{
+		ArmControlHoldJointQ(g_dm_arm_joint_target_q, 0.0f);
+	}
+	g_dm_arm_custom_input_active = TRUE;
+	return TRUE;
+}
+
 static void DMArmSetInitPoseWithJointLimit(void)
 {
+	// 生成 INIT 初始姿态：home_q 经关节限位裁剪后写入 seed/target。
 	if (g_dm_arm_init_pose_inited == TRUE)
 	{
 		return;
@@ -490,6 +593,7 @@ static void DMArmSetInitPoseWithJointLimit(void)
 
 static void DMArmUpdateHomeDoneFlag(void)
 {
+	// 归位完成判定：所有关节误差连续 N 次小于阈值才置位 home_done。
 	const fp32 joint_tol = ARM_HOME_DONE_JOINT_TOL;
 	const uint8_t stable_count_need = (uint8_t)ARM_HOME_DONE_STABLE_COUNT;
 	fp32 q_feedback[ARM_DOF];
@@ -525,6 +629,7 @@ static void DMArmUpdateHomeDoneFlag(void)
 
 static void DMArmEnsureTargetInit(void)
 {
+	// 确保运行目标已初始化：首次以 home 正解结果作为控制起点。
 	if (g_dm_arm_target_inited == TRUE)
 	{
 		return;
@@ -545,6 +650,8 @@ static void DMArmEnsureTargetInit(void)
 
 static void DMArmUpdateTargetFromInput(void)
 {
+	// 输入融合主入口：整合键鼠/遥控器/自定义控制器，输出统一末端目标。
+	// 输出经死区、低通、限幅和斜率限制后写入 ArmControlSetTargetPose。
 	const fp32 pose_xy_gain = 0.0008f;
 	const fp32 pose_yaw_gain = 0.00012f;
 	const fp32 pose_pitch_gain = 0.0001f;
@@ -604,13 +711,11 @@ static void DMArmUpdateTargetFromInput(void)
 		const fp32 rc_l_lr = DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[2], DM_ARM_RC_STICK_DEADZONE);
 		const fp32 rc_r_lr = DMArmApplyDeadzone((fp32)rc_ctrl.rc.ch[0], DM_ARM_RC_STICK_DEADZONE);
 
-		g_dm_arm_target_pose.pitch += rc_l_ud * DM_ARM_RC_PITCH_GAIN;
-		g_dm_arm_target_pose.roll += rc_l_lr * DM_ARM_RC_ROLL_GAIN;
-		g_dm_arm_target_pose.pitch = DMArmClampValue(g_dm_arm_target_pose.pitch, DM_ARM_TARGET_PITCH_MIN, DM_ARM_TARGET_PITCH_MAX);
-		g_dm_arm_target_pose.roll = DMArmClampValue(g_dm_arm_target_pose.roll, DM_ARM_TARGET_ROLL_MIN, DM_ARM_TARGET_ROLL_MAX);
+		// 旧末端方案：pitch/roll 由末端两轴电机直接执行，不走六轴末端姿态解算。
+		DMArmLegacyEndApplyDelta(rc_l_ud * DM_ARM_RC_PITCH_GAIN,
+			rc_l_lr * DM_ARM_RC_ROLL_GAIN);
 		// J4改为GM6020后，右摇杆左右直接驱动旧 yaw_b 轴目标。
 		DMArmLegacyJ4ApplyDelta(rc_r_lr * DM_ARM_RC_J4_GAIN);
-		pose_attitude_control = TRUE;
 		g_dm_arm_custom_input_active = TRUE;
 	}
 
@@ -665,14 +770,15 @@ moving_t moving;
 
 moving_t *MovingPointer(void)
 {
+	// moving 模块全局实例访问入口，用于跨模块共享状态与控制接口。
 	return &moving;
 
 }
 
-void moving_t::Get_info()
-{
-  last_sys_behaviour = sys_behaviour;
-  sys_behaviour = SysPointer()->engineer_mode;
+// void moving_t::Get_info()
+// {
+//   last_sys_behaviour = sys_behaviour;
+//   sys_behaviour = SysPointer()->engineer_mode;
 
 //   front_l_motor.motor_angle = LiftingPointer()->lifting_motor_angle[FRONT_L];
 //   front_r_motor.motor_angle = LiftingPointer()->lifting_motor_angle[FRONT_R];
@@ -685,97 +791,165 @@ void moving_t::Get_info()
 //   pitch_motor.motor_angle = SuctionPointer()->suction_motor_angle[PITCH];
 //   roll_motor.motor_angle = SuctionPointer()->suction_motor_angle[ROLL];
 
-}
-
-void moving_t::Get_set()
-{
-	NewRobotBehaviorTask();
-}
-
 void moving_t::NewRobotBehaviorTask()
 {
-	UpdateBehaviorMode();
-	if (behavior_mode != last_behavior_mode)
+	// 行为调度总入口（每周期调用）：
+	// 1) 先依据系统 mode 决定是否允许机械臂控制链工作；
+	// 2) 检测工程模式切换并执行一次性切换清理；
+	// 3) 按当前 engineer_mode 直接执行对应行为函数。
+	ArmControlSetEnable((SysPointer()->mode == ZERO_FORCE_MOVE) ? FALSE : TRUE);
+	if (SysPointer()->engineer_mode != last_sys_behaviour)
 	{
 		OnBehaviorModeChange();
-		last_behavior_mode = behavior_mode;
 	}
-	RunBehaviorMode();
+	UpdateBehaviorMode();
 }
 
 void moving_t::UpdateBehaviorMode()
 {
+	// 直接分发：标志位成立即调用对应行为，不再经过额外中间态。
 	switch (SysPointer()->engineer_mode)
 	{
+		case ZERO_FORCE:
+			BehaviorIdle();
+			break;
 		case INIT:
-			behavior_mode = NEW_BEHAVIOR_HOME;
-			break;
-		case KEYBOARD:
-			behavior_mode = NEW_BEHAVIOR_DM_ARM_MANUAL;
-			break;
-		case USER:
-			behavior_mode = NEW_BEHAVIOR_DM_ARM_AUTO;
-			break;
-		case CALIBRATE:
-			behavior_mode = NEW_BEHAVIOR_DM_ARM_CALIBRATE;
-			break;
-		case TEST:
-			behavior_mode = NEW_BEHAVIOR_DM_ARM_IK_WORK;
-			break;
-		default:
-			behavior_mode = NEW_BEHAVIOR_IDLE;
-			break;
-	}
-}
-
-void moving_t::OnBehaviorModeChange()
-{
-	ResetBehaviorSteps();
-	ClearDMArmHold();
-	g_legacy_j4_axis_inited = FALSE;
-	g_dm_arm_init_pose_inited = FALSE;
-	g_dm_arm_home_stable_count = 0;
-	g_dm_gyro_cali_count = 0;
-	SysPointer()->arm_home_done = FALSE;
-}
-
-void moving_t::RunBehaviorMode()
-{
-	switch (behavior_mode)
-	{
-		case NEW_BEHAVIOR_HOME:
 			BehaviorHome();
 			break;
-		case NEW_BEHAVIOR_DM_ARM_MANUAL:
+		case KEYBOARD:
 			BehaviorDMArmManual();
 			break;
-		case NEW_BEHAVIOR_DM_ARM_AUTO:
+		case USER:
 			BehaviorDMArmAuto();
 			break;
-		case NEW_BEHAVIOR_DM_ARM_CALIBRATE:
+		case CALIBRATE:
 			BehaviorDMArmCalibrate();
 			break;
-		case NEW_BEHAVIOR_DM_ARM_IK_WORK:
+		case TEST:
 			BehaviorDMArmIKWork();
 			break;
-		case NEW_BEHAVIOR_IDLE:
 		default:
 			BehaviorIdle();
 			break;
 	}
 }
 
+void moving_t::OnBehaviorModeChange()
+{
+	// 模式切换钩子：只做状态清理与复位，不执行运动控制。
+	// 目的：避免上一个模式残留目标/滤波状态污染新模式。
+	ResetBehaviorSteps();
+	ClearDMArmHold();
+	g_legacy_j4_axis_inited = FALSE;
+	DMArmResetJointTarget();
+	g_dm_arm_init_pose_inited = FALSE;
+	g_dm_arm_home_stable_count = 0;
+	g_dm_gyro_cali_count = 0;
+	SysPointer()->arm_home_done = FALSE;
+}
+
 void moving_t::BehaviorIdle()
 {
-	ArmControlSetEnable(FALSE);
-	SysPointer()->arm_home_done = FALSE;
+	for (uint16_t motor_id = ARM_CONTROL_DM_RX_ID_BASE; motor_id < (ARM_CONTROL_DM_RX_ID_BASE + 3U); motor_id++)
+	{
+		disable_motor_mode(&hcan1, motor_id, MIT_MODE);
+	}
 }
 
 void moving_t::BehaviorHome()
 {
-	ArmControlSetEnable(TRUE);
-	DMArmSetInitPoseWithJointLimit();
-	DMArmUpdateHomeDoneFlag();
+	//在本函数内直接完成 MIT 参数设置与 CAN 下发。
+	static bool_t arm_map_inited = FALSE;
+	const fp32 home_q[ARM_DOF] = {
+		ARM_HOME_Q1_RAD,
+		ARM_HOME_Q2_RAD,
+		ARM_HOME_Q3_RAD,
+		ARM_HOME_Q4_RAD,
+		ARM_HOME_Q5_RAD,
+		ARM_HOME_Q6_RAD,
+	};
+	const uint8_t stable_count_need = (uint8_t)ARM_HOME_DONE_STABLE_COUNT;
+	ArmDMJointMap_t dm_map[ARM_DOF];
+	DM_motor_t mit_motor;
+	hcan_t *arm_can = (ARM_CONTROL_DM_CAN == ON_CAN1) ? &hcan1 : &hcan2;
+	bool_t is_home = FALSE;
+	fp32 q_feedback[ARM_DOF];
+
+	if (arm_map_inited == FALSE)
+	{
+		ArmInit();
+		arm_map_inited = TRUE;
+	}
+
+	ArmGetDMJointMap(dm_map);
+
+	for (uint8_t i = 0; i < ARM_DOF; i++)
+	{
+		const uint16_t motor_id = (uint16_t)(ARM_CONTROL_DM_RX_ID_BASE + i);
+		const fp32 q_motor_raw = dm_map[i].direction * dm_map[i].reduction_ratio * home_q[i] + dm_map[i].zero_offset;
+		fp32 q_motor_cmd = DMArmClampValue(q_motor_raw, dm_map[i].pos_min, dm_map[i].pos_max);
+		fp32 pmax = DMArmAbsValue(dm_map[i].pos_min);
+		fp32 vmax = DMArmAbsValue(dm_map[i].vel_ff);
+		fp32 tmax = DMArmAbsValue(dm_map[i].tor_ff);
+
+		if (DMArmAbsValue(dm_map[i].pos_max) > pmax)
+		{
+			pmax = DMArmAbsValue(dm_map[i].pos_max);
+		}
+		if (pmax < 0.01f)
+		{
+			pmax = 3.14f;
+		}
+		if (vmax < 1.0f)
+		{
+			vmax = 1.0f;
+		}
+		if (tmax < 1.0f)
+		{
+			tmax = 10.0f;
+		}
+
+		enable_motor_mode(arm_can, motor_id, MIT_MODE);
+
+		mit_motor.tmp.PMAX = pmax;
+		mit_motor.tmp.VMAX = vmax;
+		mit_motor.tmp.TMAX = tmax;
+		mit_ctrl(arm_can,
+			&mit_motor,
+			motor_id,
+			q_motor_cmd,
+			dm_map[i].vel_ff,
+			dm_map[i].kp,
+			dm_map[i].kd,
+			dm_map[i].tor_ff);
+	}
+
+	if (ArmControlGetJointFeedbackQ(q_feedback) == TRUE)
+	{
+		is_home = TRUE;
+		for (uint8_t i = 0; i < ARM_DOF; i++)
+		{
+			if (DMArmAbsValue(q_feedback[i] - home_q[i]) > ARM_HOME_DONE_JOINT_TOL)
+			{
+				is_home = FALSE;
+				break;
+			}
+		}
+	}
+
+	if (is_home == TRUE)
+	{
+		if (g_dm_arm_home_stable_count < stable_count_need)
+		{
+			g_dm_arm_home_stable_count++;
+		}
+	}
+	else
+	{
+		g_dm_arm_home_stable_count = 0;
+	}
+	SysPointer()->arm_home_done = (g_dm_arm_home_stable_count >= stable_count_need) ? TRUE : FALSE;
+
 	if (task_step_1 == 0)
 	{
 		task_step_1 = 1;
@@ -784,14 +958,28 @@ void moving_t::BehaviorHome()
 
 void moving_t::BehaviorDMArmManual()
 {
-	ArmControlSetEnable(TRUE);
+	// 手动行为：目标由键鼠/遥控器实时增量更新，mode 固定为 NORMAL。
+	// 当无输入时进入“相对云台保持”，减少末端漂移感。
 	SysPointer()->arm_home_done = FALSE;
+
+	if (DMArmApplyRCJointIncrementMode() == TRUE)
+	{
+		// 左上右中/左上右下：进入新“关节增量+保持”执行方案，底盘固定为相对角度模式。
+		if (SysPointer()->mode != RELATIVE_ANGLE)
+		{
+			SysPointer()->mode = RELATIVE_ANGLE;
+		}
+		ClearDMArmHold();
+		return;
+	}
+
+	DMArmResetJointTarget();
 	DMArmEnsureTargetInit();
 	DMArmUpdateTargetFromInput();
 
-	if (SysPointer()->mode != NORMAL)
+	if (SysPointer()->mode != RELATIVE_ANGLE)
 	{
-		SysPointer()->mode = NORMAL;
+		SysPointer()->mode = RELATIVE_ANGLE;
 	}
 
 	if (DMArmHasInputCommand())
@@ -805,7 +993,9 @@ void moving_t::BehaviorDMArmManual()
 
 void moving_t::BehaviorDMArmAuto()
 {
-	ArmControlSetEnable(TRUE);
+	// 自动行为：优先使用主控 FK/自定义控制器输入更新目标；
+	// 若无有效外部输入则退回本地输入通道。
+	// 该模式当前将底层 mode 约束在 RELATIVE_ANGLE，避免误切自旋。
 	SysPointer()->arm_home_done = FALSE;
 	DMArmEnsureTargetInit();
 	DMArmLegacyEndUpdateFromLatestCustom();
@@ -814,9 +1004,9 @@ void moving_t::BehaviorDMArmAuto()
 		DMArmUpdateTargetFromInput();
 	}
 
-	if (SysPointer()->mode != SPIN)
+	if (SysPointer()->mode != RELATIVE_ANGLE)
 	{
-		SysPointer()->mode = SPIN;
+		SysPointer()->mode = RELATIVE_ANGLE;
 	}
 
 	if (DMArmHasInputCommand())
@@ -830,6 +1020,9 @@ void moving_t::BehaviorDMArmAuto()
 
 void moving_t::BehaviorDMArmCalibrate()
 {
+	// 标定行为（分阶段状态机）：
+	// stage1 云台回中 -> stage2 机械臂零偏标定 -> stage3 陀螺仪标定 -> stage4 退出到 KEYBOARD。
+	// 每阶段伴随蜂鸣提示，失败路径会中止并回退到人工控制。
 	static uint8_t last_log_step = 0xFFU;
 
 	if (task_step_1 == 0)
@@ -952,13 +1145,12 @@ void moving_t::BehaviorDMArmCalibrate()
 		task_step_1 = 5;
 	}
 
-	ArmControlSetEnable(FALSE);
 	SysPointer()->arm_home_done = FALSE;
 }
 
 void moving_t::BehaviorDMArmIKWork()
 {
-	ArmControlSetEnable(TRUE);
+	// IK 调试行为：锁定到底盘 LOCK_WHEEL 模式，持续接收输入并更新机械臂目标。
 	SysPointer()->arm_home_done = FALSE;
 	DMArmEnsureTargetInit();
 	DMArmUpdateTargetFromInput();
@@ -979,6 +1171,7 @@ void moving_t::BehaviorDMArmIKWork()
 
 bool_t moving_t::DMArmHasInputCommand()
 {
+	// 输入判据：任一控制通道有效即视为“有人工/外部命令”，用于保持逻辑切换。
 	if (g_dm_arm_custom_input_active == TRUE)
 	{
 		return TRUE;
@@ -1008,6 +1201,7 @@ bool_t moving_t::DMArmHasInputCommand()
 
 void moving_t::HoldDMArmRelativeToGimbal()
 {
+	// 保持策略：记录首次参考 yaw，后续维护相对偏差，避免云台转动时机械臂出现突跳。
 	if (dm_arm_hold_valid == FALSE)
 	{
 		dm_arm_hold_gimbal_yaw = GimbalPointer()->yaw_relative_angle;
@@ -1021,6 +1215,7 @@ void moving_t::HoldDMArmRelativeToGimbal()
 
 void moving_t::ClearDMArmHold()
 {
+	// 清空保持状态，下一次无输入时重新采样基准。
 	dm_arm_hold_valid = FALSE;
 	dm_arm_hold_gimbal_yaw = 0.0f;
 	dm_arm_hold_delta_yaw = 0.0f;
@@ -1028,6 +1223,7 @@ void moving_t::ClearDMArmHold()
 
 void moving_t::ResetBehaviorSteps()
 {
+	// 重置多阶段任务步进变量，保证进入新模式时从阶段0重新开始。
 	task_step_1 = 0;
 	last_task_step_1 = 0;
 	task_work_1 = 0;
@@ -1037,476 +1233,476 @@ void moving_t::ResetBehaviorSteps()
 }
 
 
-void moving_motor_t::init(float angle_lenght,float lenght)
-{
-	to_angle=angle_lenght/lenght;
-	max_angle=angle_lenght;
-	min_angle=0;
-}
+// void moving_motor_t::init(float angle_lenght,float lenght)
+// {
+// 	to_angle=angle_lenght/lenght;
+// 	max_angle=angle_lenght;
+// 	min_angle=0;
+// }
 
-void moving_motor_t::set_angle_limit()
-{
+// void moving_motor_t::set_angle_limit()
+// {
 
-	if(max_angle>0)
-	{
-		if(motor_angle_set<0)
-			motor_angle_set=0;
-		if(motor_angle_set>max_angle)
-			motor_angle_set=max_angle;
-	}
+// 	if(max_angle>0)
+// 	{
+// 		if(motor_angle_set<0)
+// 			motor_angle_set=0;
+// 		if(motor_angle_set>max_angle)
+// 			motor_angle_set=max_angle;
+// 	}
 
-	if(max_angle<0)
-	{
-		if(motor_angle_set>0)
-			motor_angle_set=0;
-		if(motor_angle_set<max_angle)
-			motor_angle_set=max_angle;
-		}
-}
+// 	if(max_angle<0)
+// 	{
+// 		if(motor_angle_set>0)
+// 			motor_angle_set=0;
+// 		if(motor_angle_set<max_angle)
+// 			motor_angle_set=max_angle;
+// 		}
+// }
 
 
-void moving_t::main_init(float front_cm,float side_cm,float lifting_cm,char *step,char value)
-{
-	if(*step!=value)
-	{
-		return;
-	}
-	uint8_t front_ok=0,side_ok=0,lifting_ok=0;
-	//前伸
-	if(front_cm>0)//判断是否生效
-	{
-		//获取速度
-		front_l_motor.add_angle=front_cm*front_l_motor.to_angle;
-		front_r_motor.add_angle=front_cm*front_r_motor.to_angle;
-		//判断设定是否到达目标值
-		front_l_motor.motor_angle_set-=front_l_motor.add_angle;
-		front_r_motor.motor_angle_set-=front_r_motor.add_angle;
-	}
-	//横移
-	if(side_cm>0)
-	{
-		side_motor.add_angle=side_cm*side_motor.to_angle;
-		side_motor.motor_angle_set-=side_motor.add_angle;
+// void moving_t::main_init(float front_cm,float side_cm,float lifting_cm,char *step,char value)
+// {
+// 	if(*step!=value)
+// 	{
+// 		return;
+// 	}
+// 	uint8_t front_ok=0,side_ok=0,lifting_ok=0;
+// 	//前伸
+// 	if(front_cm>0)//判断是否生效
+// 	{
+// 		//获取速度
+// 		front_l_motor.add_angle=front_cm*front_l_motor.to_angle;
+// 		front_r_motor.add_angle=front_cm*front_r_motor.to_angle;
+// 		//判断设定是否到达目标值
+// 		front_l_motor.motor_angle_set-=front_l_motor.add_angle;
+// 		front_r_motor.motor_angle_set-=front_r_motor.add_angle;
+// 	}
+// 	//横移
+// 	if(side_cm>0)
+// 	{
+// 		side_motor.add_angle=side_cm*side_motor.to_angle;
+// 		side_motor.motor_angle_set-=side_motor.add_angle;
 
-	}
-	//抬升
-	if(lifting_cm>0)
-	{
+// 	}
+// 	//抬升
+// 	if(lifting_cm>0)
+// 	{
 
-		up_l_motor.add_angle=lifting_cm*up_l_motor.to_angle;
-		up_r_motor.add_angle=lifting_cm*up_r_motor.to_angle;
+// 		up_l_motor.add_angle=lifting_cm*up_l_motor.to_angle;
+// 		up_r_motor.add_angle=lifting_cm*up_r_motor.to_angle;
 
-		up_l_motor.motor_angle_set-=up_l_motor.add_angle;
-		up_r_motor.motor_angle_set-=up_r_motor.add_angle;
-	}
+// 		up_l_motor.motor_angle_set-=up_l_motor.add_angle;
+// 		up_r_motor.motor_angle_set-=up_r_motor.add_angle;
+// 	}
 
-	//判断动作是否完成
-	if((abs(front_l_motor.motor_angle-front_l_motor.motor_angle_set)>10000&&
-		abs(front_r_motor.motor_angle-front_r_motor.motor_angle_set)>10000)||front_cm<=0)
-	{
-		front_ok=1;
-	}
-	if(abs(side_motor.motor_angle-side_motor.motor_angle_set)>8000||side_cm<=0)
-	{
-		side_ok=1;
-	}
-	if((abs(up_l_motor.motor_angle-up_l_motor.motor_angle_set)>10000&&
-		abs(up_r_motor.motor_angle-up_r_motor.motor_angle_set)>10000)||lifting_cm<=0)
-	{
-		lifting_ok=1;
-	}
-	//全部完成，步骤值加1
-	if(front_ok&&side_ok&&lifting_ok)
-	{
-if(front_cm>0)
-{
-	front_l_motor.motor_angle_set=0;
-	front_r_motor.motor_angle_set=0;
-	LiftingPointer()->lifting_motor_angle[FRONT_L]=2000;
-	LiftingPointer()->lifting_motor_angle[FRONT_R]=2000;
-}
-if(side_cm>0)
-{
-	LiftingPointer()->lifting_motor_angle[SIDE]=4000;
-	side_motor.motor_angle_set=0;
-}
-if(lifting_cm>0)
-{
-	up_l_motor.motor_angle_set=0;
-	up_r_motor.motor_angle_set=0;
-	LiftingPointer()->lifting_motor_angle[UP_L]=3000;
-	LiftingPointer()->lifting_motor_angle[UP_R]=-3000;
-}
-	*step+=1;
-	}
-}
+// 	//判断动作是否完成
+// 	if((abs(front_l_motor.motor_angle-front_l_motor.motor_angle_set)>10000&&
+// 		abs(front_r_motor.motor_angle-front_r_motor.motor_angle_set)>10000)||front_cm<=0)
+// 	{
+// 		front_ok=1;
+// 	}
+// 	if(abs(side_motor.motor_angle-side_motor.motor_angle_set)>8000||side_cm<=0)
+// 	{
+// 		side_ok=1;
+// 	}
+// 	if((abs(up_l_motor.motor_angle-up_l_motor.motor_angle_set)>10000&&
+// 		abs(up_r_motor.motor_angle-up_r_motor.motor_angle_set)>10000)||lifting_cm<=0)
+// 	{
+// 		lifting_ok=1;
+// 	}
+// 	//全部完成，步骤值加1
+// 	if(front_ok&&side_ok&&lifting_ok)
+// 	{
+// if(front_cm>0)
+// {
+// 	front_l_motor.motor_angle_set=0;
+// 	front_r_motor.motor_angle_set=0;
+// 	LiftingPointer()->lifting_motor_angle[FRONT_L]=2000;
+// 	LiftingPointer()->lifting_motor_angle[FRONT_R]=2000;
+// }
+// if(side_cm>0)
+// {
+// 	LiftingPointer()->lifting_motor_angle[SIDE]=4000;
+// 	side_motor.motor_angle_set=0;
+// }
+// if(lifting_cm>0)
+// {
+// 	up_l_motor.motor_angle_set=0;
+// 	up_r_motor.motor_angle_set=0;
+// 	LiftingPointer()->lifting_motor_angle[UP_L]=3000;
+// 	LiftingPointer()->lifting_motor_angle[UP_R]=-3000;
+// }
+// 	*step+=1;
+// 	}
+// }
 
 
 /**
   * @brief       主机构移动指定位置
 	* @param[in]   前伸位置，横移位置，抬升位置，速度（add值），步骤指针，步骤值
   */	
- void moving_t::main_moving_position(float front_cm,float side_cm,float lifting_cm,float speed,char *step,char value)
- {
-	 if(*step!=value)
-	 {
-		 return;
-	 }
-	 uint8_t front_ok=0,side_ok=0,lifting_ok=0;
-	 //前伸
-	 if(front_cm>-1)//判断是否生效
-	 {
-		 //获取目标值
-		 front_l_motor.motor_angle_goal=front_cm*front_l_motor.to_angle;
-		 front_r_motor.motor_angle_goal=front_cm*front_r_motor.to_angle;
-		 //获取速度
-		 front_l_motor.add_angle=abs(speed*front_l_motor.to_angle);
-		 front_r_motor.add_angle=abs(speed*front_r_motor.to_angle);
-		 //判断设定是否到达目标值
-		 if(front_l_motor.motor_angle_set==front_l_motor.motor_angle_goal||
-			 abs(front_l_motor.motor_angle_set-front_l_motor.motor_angle_goal)<abs(front_l_motor.add_angle))
-		 {
-			 front_l_motor.motor_angle_set=front_l_motor.motor_angle_goal;
-		 }
-		 else 
-		 {
-			 if(front_l_motor.motor_angle_set<front_l_motor.motor_angle_goal)
-			 {
-				 front_l_motor.motor_angle_set+=front_l_motor.add_angle;
-			 }
-			 else if(front_l_motor.motor_angle_set>front_l_motor.motor_angle_goal)
-			 {
-				 front_l_motor.motor_angle_set-=front_l_motor.add_angle;
-			 }
-		 }
-		 //判断是否到达目标值
-		 if(front_r_motor.motor_angle_set==front_r_motor.motor_angle_goal||
-			 abs(front_r_motor.motor_angle_set-front_r_motor.motor_angle_goal)<abs(front_r_motor.add_angle))
-		 {
-			 front_r_motor.motor_angle_set=front_r_motor.motor_angle_goal;
-		 }
-		 else 
-		 {
-			 if(front_r_motor.motor_angle_set<front_r_motor.motor_angle_goal)
-			 {
-				 front_r_motor.motor_angle_set+=front_r_motor.add_angle;
-			 }
-			 else if(front_r_motor.motor_angle_set>front_r_motor.motor_angle_goal)
-			 {
-				 front_r_motor.motor_angle_set-=front_r_motor.add_angle;
-			 }
-		 }
-	 }
-	 //横移
-	 if(side_cm>-1)
-	 {
-		 //获取目标值
-		 side_motor.motor_angle_goal=side_cm*side_motor.to_angle;
-		 //获取速度
-		 side_motor.add_angle=abs(speed*side_motor.to_angle);
-		 //判断是否到达目标值
-		 if(side_motor.motor_angle_set==side_motor.motor_angle_goal||
-			 abs(side_motor.motor_angle_set-side_motor.motor_angle_goal)<abs(side_motor.add_angle))
-		 {
-			 side_motor.motor_angle_set=side_motor.motor_angle_goal;
-		 }
-		 else 
-		 {
-			 if(side_motor.motor_angle_set<side_motor.motor_angle_goal)
-			 {
-				 side_motor.motor_angle_set+=side_motor.add_angle;
-			 }
-			 else if(side_motor.motor_angle_set>side_motor.motor_angle_goal)
-			 {
-				 side_motor.motor_angle_set-=side_motor.add_angle;
-			 }
-		 }
-	 }
-	 //抬升
-	 if(lifting_cm>-1)
-	 {
-		 //获取目标值
-		 up_l_motor.motor_angle_goal=lifting_cm*up_l_motor.to_angle;
-		 up_r_motor.motor_angle_goal=lifting_cm*up_r_motor.to_angle;
-		 //获取速度
-		 up_l_motor.add_angle=abs(speed*up_l_motor.to_angle);
-		 up_r_motor.add_angle=abs(speed*up_r_motor.to_angle);
-		 //判断是否到达目标值
-		 if(up_l_motor.motor_angle_set==up_l_motor.motor_angle_goal||
-			 abs(up_l_motor.motor_angle_set-up_l_motor.motor_angle_goal)<abs(up_l_motor.add_angle))
-		 {
-			 up_l_motor.motor_angle_set=up_l_motor.motor_angle_goal;
-		 }
-		 else 
-		 {
-			 if(up_l_motor.motor_angle_set<up_l_motor.motor_angle_goal)
-			 {
-				 up_l_motor.motor_angle_set+=up_l_motor.add_angle;
-			 }
-			 else if(up_l_motor.motor_angle_set>up_l_motor.motor_angle_goal)
-			 {
-				 up_l_motor.motor_angle_set-=up_l_motor.add_angle;
-			 }
-		 }
-		 //判断是否到达目标值
-		 if(up_r_motor.motor_angle_set==up_r_motor.motor_angle_goal||
-			 abs(up_r_motor.motor_angle_set-up_r_motor.motor_angle_goal)<abs(up_r_motor.add_angle))
-		 {
-			 up_r_motor.motor_angle_set=up_r_motor.motor_angle_goal;
-		 }
-		 else 
-		 {
-			 if(up_r_motor.motor_angle_set<up_r_motor.motor_angle_goal)
-			 {
-				 up_r_motor.motor_angle_set+=up_r_motor.add_angle;
-			 }
-			 else if(up_r_motor.motor_angle_set>up_r_motor.motor_angle_goal)
-			 {
-				 up_r_motor.motor_angle_set-=up_r_motor.add_angle;
-			 }
-		 }
-	 }
+//  void moving_t::main_moving_position(float front_cm,float side_cm,float lifting_cm,float speed,char *step,char value)
+//  {
+// 	 if(*step!=value)
+// 	 {
+// 		 return;
+// 	 }
+// 	 uint8_t front_ok=0,side_ok=0,lifting_ok=0;
+// 	 //前伸
+// 	 if(front_cm>-1)//判断是否生效
+// 	 {
+// 		 //获取目标值
+// 		 front_l_motor.motor_angle_goal=front_cm*front_l_motor.to_angle;
+// 		 front_r_motor.motor_angle_goal=front_cm*front_r_motor.to_angle;
+// 		 //获取速度
+// 		 front_l_motor.add_angle=abs(speed*front_l_motor.to_angle);
+// 		 front_r_motor.add_angle=abs(speed*front_r_motor.to_angle);
+// 		 //判断设定是否到达目标值
+// 		 if(front_l_motor.motor_angle_set==front_l_motor.motor_angle_goal||
+// 			 abs(front_l_motor.motor_angle_set-front_l_motor.motor_angle_goal)<abs(front_l_motor.add_angle))
+// 		 {
+// 			 front_l_motor.motor_angle_set=front_l_motor.motor_angle_goal;
+// 		 }
+// 		 else 
+// 		 {
+// 			 if(front_l_motor.motor_angle_set<front_l_motor.motor_angle_goal)
+// 			 {
+// 				 front_l_motor.motor_angle_set+=front_l_motor.add_angle;
+// 			 }
+// 			 else if(front_l_motor.motor_angle_set>front_l_motor.motor_angle_goal)
+// 			 {
+// 				 front_l_motor.motor_angle_set-=front_l_motor.add_angle;
+// 			 }
+// 		 }
+// 		 //判断是否到达目标值
+// 		 if(front_r_motor.motor_angle_set==front_r_motor.motor_angle_goal||
+// 			 abs(front_r_motor.motor_angle_set-front_r_motor.motor_angle_goal)<abs(front_r_motor.add_angle))
+// 		 {
+// 			 front_r_motor.motor_angle_set=front_r_motor.motor_angle_goal;
+// 		 }
+// 		 else 
+// 		 {
+// 			 if(front_r_motor.motor_angle_set<front_r_motor.motor_angle_goal)
+// 			 {
+// 				 front_r_motor.motor_angle_set+=front_r_motor.add_angle;
+// 			 }
+// 			 else if(front_r_motor.motor_angle_set>front_r_motor.motor_angle_goal)
+// 			 {
+// 				 front_r_motor.motor_angle_set-=front_r_motor.add_angle;
+// 			 }
+// 		 }
+// 	 }
+// 	 //横移
+// 	 if(side_cm>-1)
+// 	 {
+// 		 //获取目标值
+// 		 side_motor.motor_angle_goal=side_cm*side_motor.to_angle;
+// 		 //获取速度
+// 		 side_motor.add_angle=abs(speed*side_motor.to_angle);
+// 		 //判断是否到达目标值
+// 		 if(side_motor.motor_angle_set==side_motor.motor_angle_goal||
+// 			 abs(side_motor.motor_angle_set-side_motor.motor_angle_goal)<abs(side_motor.add_angle))
+// 		 {
+// 			 side_motor.motor_angle_set=side_motor.motor_angle_goal;
+// 		 }
+// 		 else 
+// 		 {
+// 			 if(side_motor.motor_angle_set<side_motor.motor_angle_goal)
+// 			 {
+// 				 side_motor.motor_angle_set+=side_motor.add_angle;
+// 			 }
+// 			 else if(side_motor.motor_angle_set>side_motor.motor_angle_goal)
+// 			 {
+// 				 side_motor.motor_angle_set-=side_motor.add_angle;
+// 			 }
+// 		 }
+// 	 }
+// 	 //抬升
+// 	 if(lifting_cm>-1)
+// 	 {
+// 		 //获取目标值
+// 		 up_l_motor.motor_angle_goal=lifting_cm*up_l_motor.to_angle;
+// 		 up_r_motor.motor_angle_goal=lifting_cm*up_r_motor.to_angle;
+// 		 //获取速度
+// 		 up_l_motor.add_angle=abs(speed*up_l_motor.to_angle);
+// 		 up_r_motor.add_angle=abs(speed*up_r_motor.to_angle);
+// 		 //判断是否到达目标值
+// 		 if(up_l_motor.motor_angle_set==up_l_motor.motor_angle_goal||
+// 			 abs(up_l_motor.motor_angle_set-up_l_motor.motor_angle_goal)<abs(up_l_motor.add_angle))
+// 		 {
+// 			 up_l_motor.motor_angle_set=up_l_motor.motor_angle_goal;
+// 		 }
+// 		 else 
+// 		 {
+// 			 if(up_l_motor.motor_angle_set<up_l_motor.motor_angle_goal)
+// 			 {
+// 				 up_l_motor.motor_angle_set+=up_l_motor.add_angle;
+// 			 }
+// 			 else if(up_l_motor.motor_angle_set>up_l_motor.motor_angle_goal)
+// 			 {
+// 				 up_l_motor.motor_angle_set-=up_l_motor.add_angle;
+// 			 }
+// 		 }
+// 		 //判断是否到达目标值
+// 		 if(up_r_motor.motor_angle_set==up_r_motor.motor_angle_goal||
+// 			 abs(up_r_motor.motor_angle_set-up_r_motor.motor_angle_goal)<abs(up_r_motor.add_angle))
+// 		 {
+// 			 up_r_motor.motor_angle_set=up_r_motor.motor_angle_goal;
+// 		 }
+// 		 else 
+// 		 {
+// 			 if(up_r_motor.motor_angle_set<up_r_motor.motor_angle_goal)
+// 			 {
+// 				 up_r_motor.motor_angle_set+=up_r_motor.add_angle;
+// 			 }
+// 			 else if(up_r_motor.motor_angle_set>up_r_motor.motor_angle_goal)
+// 			 {
+// 				 up_r_motor.motor_angle_set-=up_r_motor.add_angle;
+// 			 }
+// 		 }
+// 	 }
  
-	 up_l_motor.set_angle_limit();
-	 up_r_motor.set_angle_limit();
-	 front_l_motor.set_angle_limit();
-	 front_r_motor.set_angle_limit();
-	 side_motor.set_angle_limit();
+// 	 up_l_motor.set_angle_limit();
+// 	 up_r_motor.set_angle_limit();
+// 	 front_l_motor.set_angle_limit();
+// 	 front_r_motor.set_angle_limit();
+// 	 side_motor.set_angle_limit();
  
-	 //判断动作是否完成
-	 if((abs(front_l_motor.motor_angle-front_l_motor.motor_angle_goal)<2000&&
-		 abs(front_r_motor.motor_angle-front_r_motor.motor_angle_goal)<2000)||front_cm<0)
-	 {
-		 front_ok=1;
-	 }
-	 if(abs(side_motor.motor_angle-side_motor.motor_angle_goal)<1000||side_cm<0)
-	 {
-		 side_ok=1;
-	 }
-	 if((abs(up_l_motor.motor_angle-up_l_motor.motor_angle_goal)<2000&&
-		 abs(up_r_motor.motor_angle-up_r_motor.motor_angle_goal)<2000)||lifting_cm<0)
-	 {
-		 lifting_ok=1;
-	 }
-	 //全部完成，步骤值加1
-	 if(front_ok&&side_ok&&lifting_ok)
-	 {
-	 *step+=1;
-	 }
- }
+// 	 //判断动作是否完成
+// 	 if((abs(front_l_motor.motor_angle-front_l_motor.motor_angle_goal)<2000&&
+// 		 abs(front_r_motor.motor_angle-front_r_motor.motor_angle_goal)<2000)||front_cm<0)
+// 	 {
+// 		 front_ok=1;
+// 	 }
+// 	 if(abs(side_motor.motor_angle-side_motor.motor_angle_goal)<1000||side_cm<0)
+// 	 {
+// 		 side_ok=1;
+// 	 }
+// 	 if((abs(up_l_motor.motor_angle-up_l_motor.motor_angle_goal)<2000&&
+// 		 abs(up_r_motor.motor_angle-up_r_motor.motor_angle_goal)<2000)||lifting_cm<0)
+// 	 {
+// 		 lifting_ok=1;
+// 	 }
+// 	 //全部完成，步骤值加1
+// 	 if(front_ok&&side_ok&&lifting_ok)
+// 	 {
+// 	 *step+=1;
+// 	 }
+//  }
 
  
 /**
   * @brief       主机构指定速度移动
 	* @param[in]   前伸位置，横移位置，抬升位置，速度（add值），步骤指针，步骤值
   */
- void moving_t::main_moving_speed(float front_add,float side_add,float lifing_add,char *step,char value)
- {
- if(*step!=value)
-     {
-         return;
-     }
-     //前伸
-     front_l_motor.add_angle=front_add*front_l_motor.to_angle;
-     front_r_motor.add_angle=front_add*front_r_motor.to_angle;
-     front_l_motor.motor_angle_set+=front_l_motor.add_angle;
-     front_r_motor.motor_angle_set+=front_r_motor.add_angle;
-     //横移
-     side_motor.add_angle=side_add*side_motor.to_angle;
-     side_motor.motor_angle_set+=side_motor.add_angle;
-     //抬升	
-     up_l_motor.add_angle=lifing_add*up_l_motor.to_angle;
-     up_r_motor.add_angle=lifing_add*up_r_motor.to_angle;
-     up_l_motor.motor_angle_set+=up_l_motor.add_angle;
-     up_r_motor.motor_angle_set+=up_r_motor.add_angle;
+//  void moving_t::main_moving_speed(float front_add,float side_add,float lifing_add,char *step,char value)
+//  {
+//  if(*step!=value)
+//      {
+//          return;
+//      }
+//      //前伸
+//      front_l_motor.add_angle=front_add*front_l_motor.to_angle;
+//      front_r_motor.add_angle=front_add*front_r_motor.to_angle;
+//      front_l_motor.motor_angle_set+=front_l_motor.add_angle;
+//      front_r_motor.motor_angle_set+=front_r_motor.add_angle;
+//      //横移
+//      side_motor.add_angle=side_add*side_motor.to_angle;
+//      side_motor.motor_angle_set+=side_motor.add_angle;
+//      //抬升	
+//      up_l_motor.add_angle=lifing_add*up_l_motor.to_angle;
+//      up_r_motor.add_angle=lifing_add*up_r_motor.to_angle;
+//      up_l_motor.motor_angle_set+=up_l_motor.add_angle;
+//      up_r_motor.motor_angle_set+=up_r_motor.add_angle;
          
-     up_l_motor.set_angle_limit();
-     up_r_motor.set_angle_limit();
-     front_l_motor.set_angle_limit();
-     front_r_motor.set_angle_limit();
-     side_motor.set_angle_limit();
+//      up_l_motor.set_angle_limit();
+//      up_r_motor.set_angle_limit();
+//      front_l_motor.set_angle_limit();
+//      front_r_motor.set_angle_limit();
+//      side_motor.set_angle_limit();
  
  
- }
+//  }
  
-void moving_t::main_moving_rc(char*step,char value)
-{
-	if(*step!=value)
-	{
-		return;
-	}
-	float front_speed,side_speed,lifting_speed;
-	// front_speed=moving_rc_ctrl->rc.ch[1]*0.00003;
-	// side_speed=moving_rc_ctrl->rc.ch[0]*0.00003;
-	// lifting_speed=moving_rc_ctrl->rc.ch[2]*0.00004;
-	main_moving_speed(front_speed,side_speed,lifting_speed,step,value);
+// void moving_t::main_moving_rc(char*step,char value)
+// {
+// 	if(*step!=value)
+// 	{
+// 		return;
+// 	}
+// 	float front_speed,side_speed,lifting_speed;
+// 	// front_speed=moving_rc_ctrl->rc.ch[1]*0.00003;
+// 	// side_speed=moving_rc_ctrl->rc.ch[0]*0.00003;
+// 	// lifting_speed=moving_rc_ctrl->rc.ch[2]*0.00004;
+// 	main_moving_speed(front_speed,side_speed,lifting_speed,step,value);
 	
-}
+// }
 
 /**
   * @brief       主机构停止移动
 	* @param[in]   步骤指针，步骤值
   */
- void moving_t::main_moving_stop(char*step,char value)
- {
- if(*step!=value)
-	 {
-		 return;
-	 }
- moving.up_l_motor.add_angle=0;
- moving.up_l_motor.motor_angle_goal=0;
- moving.up_l_motor.motor_angle_set=moving.up_l_motor.motor_angle;
- moving.up_r_motor.add_angle=0;
- moving.up_r_motor.motor_angle_goal=0;
- moving.up_r_motor.motor_angle_set=moving.up_r_motor.motor_angle;
+//  void moving_t::main_moving_stop(char*step,char value)
+//  {
+//  if(*step!=value)
+// 	 {
+// 		 return;
+// 	 }
+//  moving.up_l_motor.add_angle=0;
+//  moving.up_l_motor.motor_angle_goal=0;
+//  moving.up_l_motor.motor_angle_set=moving.up_l_motor.motor_angle;
+//  moving.up_r_motor.add_angle=0;
+//  moving.up_r_motor.motor_angle_goal=0;
+//  moving.up_r_motor.motor_angle_set=moving.up_r_motor.motor_angle;
  
- moving.front_l_motor.add_angle=0;
- moving.front_l_motor.motor_angle_goal=0;
- moving.front_l_motor.motor_angle_set=moving.front_l_motor.motor_angle;
- moving.front_r_motor.add_angle=0;
- moving.front_r_motor.motor_angle_goal=0;
- moving.front_r_motor.motor_angle_set=moving.front_r_motor.motor_angle;
+//  moving.front_l_motor.add_angle=0;
+//  moving.front_l_motor.motor_angle_goal=0;
+//  moving.front_l_motor.motor_angle_set=moving.front_l_motor.motor_angle;
+//  moving.front_r_motor.add_angle=0;
+//  moving.front_r_motor.motor_angle_goal=0;
+//  moving.front_r_motor.motor_angle_set=moving.front_r_motor.motor_angle;
  
- moving.side_motor.add_angle=0;
- moving.side_motor.motor_angle_goal=0;
- moving.side_motor.motor_angle_set=moving.side_motor.motor_angle;
+//  moving.side_motor.add_angle=0;
+//  moving.side_motor.motor_angle_goal=0;
+//  moving.side_motor.motor_angle_set=moving.side_motor.motor_angle;
  
- *step+=1;
- }
+//  *step+=1;
+//  }
  
 
- /**
-  * @brief       副机构移动指定位置
-	* @param[in]   前伸位置，横移位置，抬升位置，速度（add值），步骤指针，步骤值
-  */
-void moving_t::ancillary_moving_position(float front_l_cm,float front_r_cm,float up_l_cm,float up_r_cm,float speed,char *step,char value)
-{
+//  /**
+//   * @brief       副机构移动指定位置
+// 	* @param[in]   前伸位置，横移位置，抬升位置，速度（add值），步骤指针，步骤值
+//   */
+// void moving_t::ancillary_moving_position(float front_l_cm,float front_r_cm,float up_l_cm,float up_r_cm,float speed,char *step,char value)
+// {
 
-if(*step!=value)
-	{
-		return;
-	}
-	uint8_t front_l_ok=0,front_r_ok = 0,up_l_ok=0,up_r_ok=0;
+// if(*step!=value)
+// 	{
+// 		return;
+// 	}
+// 	uint8_t front_l_ok=0,front_r_ok = 0,up_l_ok=0,up_r_ok=0;
 	
-	//左前伸
-	if(front_l_cm>-1)//判断是否生效
-	{
-		ancillary_front_motor_l.motor_angle_goal=front_l_cm*ancillary_front_motor_l.to_angle;
-		//获取速度
-		ancillary_front_motor_l.add_angle=abs(speed*ancillary_front_motor_l.to_angle);
-		//判断是否到达目标值
-		if(ancillary_front_motor_l.motor_angle_set==ancillary_front_motor_l.motor_angle_goal||
-			abs(ancillary_front_motor_l.motor_angle_set-ancillary_front_motor_l.motor_angle_goal)<abs(ancillary_front_motor_l.add_angle))
-		{
-			ancillary_front_motor_l.motor_angle_set=ancillary_front_motor_l.motor_angle_goal;
-		}
-		else 
-		{
-			if(ancillary_front_motor_l.motor_angle_set<ancillary_front_motor_l.motor_angle_goal)
-			{
-				ancillary_front_motor_l.motor_angle_set+=ancillary_front_motor_l.add_angle;
-			}
-			else if(ancillary_front_motor_l.motor_angle_set>ancillary_front_motor_l.motor_angle_goal)
-			{
-				ancillary_front_motor_l.motor_angle_set-=ancillary_front_motor_l.add_angle;
-			}
-		}
-	}	
-			//右前伸
-	if(front_r_cm>-1)//判断是否生效
-	{
-		ancillary_front_motor_r.motor_angle_goal=front_r_cm*ancillary_front_motor_r.to_angle;
-		//获取速度
-		ancillary_front_motor_r.add_angle=abs(speed*ancillary_front_motor_r.to_angle);
-		//判断是否到达目标值
-		if(ancillary_front_motor_r.motor_angle_set==ancillary_front_motor_r.motor_angle_goal||
-			abs(ancillary_front_motor_r.motor_angle_set-ancillary_front_motor_r.motor_angle_goal)<abs(ancillary_front_motor_r.add_angle))
-		{
-			ancillary_front_motor_r.motor_angle_set=ancillary_front_motor_r.motor_angle_goal;
-		}
-		else 
-		{
-			if(ancillary_front_motor_r.motor_angle_set<ancillary_front_motor_r.motor_angle_goal)
-			{
-				ancillary_front_motor_r.motor_angle_set+=ancillary_front_motor_r.add_angle;
-			}
-			else if(ancillary_front_motor_r.motor_angle_set>ancillary_front_motor_r.motor_angle_goal)
-			{
-				ancillary_front_motor_r.motor_angle_set-=ancillary_front_motor_r.add_angle;
-			}
-		}
-	}	
+// 	//左前伸
+// 	if(front_l_cm>-1)//判断是否生效
+// 	{
+// 		ancillary_front_motor_l.motor_angle_goal=front_l_cm*ancillary_front_motor_l.to_angle;
+// 		//获取速度
+// 		ancillary_front_motor_l.add_angle=abs(speed*ancillary_front_motor_l.to_angle);
+// 		//判断是否到达目标值
+// 		if(ancillary_front_motor_l.motor_angle_set==ancillary_front_motor_l.motor_angle_goal||
+// 			abs(ancillary_front_motor_l.motor_angle_set-ancillary_front_motor_l.motor_angle_goal)<abs(ancillary_front_motor_l.add_angle))
+// 		{
+// 			ancillary_front_motor_l.motor_angle_set=ancillary_front_motor_l.motor_angle_goal;
+// 		}
+// 		else 
+// 		{
+// 			if(ancillary_front_motor_l.motor_angle_set<ancillary_front_motor_l.motor_angle_goal)
+// 			{
+// 				ancillary_front_motor_l.motor_angle_set+=ancillary_front_motor_l.add_angle;
+// 			}
+// 			else if(ancillary_front_motor_l.motor_angle_set>ancillary_front_motor_l.motor_angle_goal)
+// 			{
+// 				ancillary_front_motor_l.motor_angle_set-=ancillary_front_motor_l.add_angle;
+// 			}
+// 		}
+// 	}	
+// 			//右前伸
+// 	if(front_r_cm>-1)//判断是否生效
+// 	{
+// 		ancillary_front_motor_r.motor_angle_goal=front_r_cm*ancillary_front_motor_r.to_angle;
+// 		//获取速度
+// 		ancillary_front_motor_r.add_angle=abs(speed*ancillary_front_motor_r.to_angle);
+// 		//判断是否到达目标值
+// 		if(ancillary_front_motor_r.motor_angle_set==ancillary_front_motor_r.motor_angle_goal||
+// 			abs(ancillary_front_motor_r.motor_angle_set-ancillary_front_motor_r.motor_angle_goal)<abs(ancillary_front_motor_r.add_angle))
+// 		{
+// 			ancillary_front_motor_r.motor_angle_set=ancillary_front_motor_r.motor_angle_goal;
+// 		}
+// 		else 
+// 		{
+// 			if(ancillary_front_motor_r.motor_angle_set<ancillary_front_motor_r.motor_angle_goal)
+// 			{
+// 				ancillary_front_motor_r.motor_angle_set+=ancillary_front_motor_r.add_angle;
+// 			}
+// 			else if(ancillary_front_motor_r.motor_angle_set>ancillary_front_motor_r.motor_angle_goal)
+// 			{
+// 				ancillary_front_motor_r.motor_angle_set-=ancillary_front_motor_r.add_angle;
+// 			}
+// 		}
+// 	}	
 
-	//左抬升
-	if(up_l_cm>-1)
-	{
-		ancillary_up_motor_l.motor_angle_goal=up_l_cm*ancillary_up_motor_l.to_angle;		
-		ancillary_up_motor_l.add_angle=abs(speed*ancillary_up_motor_l.to_angle);		
-		if(ancillary_up_motor_l.motor_angle_set==ancillary_up_motor_l.motor_angle_goal||
-			abs(ancillary_up_motor_l.motor_angle_set-ancillary_up_motor_l.motor_angle_goal)<abs(ancillary_up_motor_l.add_angle))
-		{
-			ancillary_up_motor_l.motor_angle_set=ancillary_up_motor_l.motor_angle_goal;
-		}
-		else 
-		{
-			if(ancillary_up_motor_l.motor_angle_set<ancillary_up_motor_l.motor_angle_goal)
-			{
-				ancillary_up_motor_l.motor_angle_set+=ancillary_up_motor_l.add_angle;
-			}
-			else if(ancillary_up_motor_l.motor_angle_set>ancillary_up_motor_l.motor_angle_goal)
-			{
-				ancillary_up_motor_l.motor_angle_set-=ancillary_up_motor_l.add_angle;
-			}
-		}
-	}
-	//右抬升
-	if(up_r_cm>-1)
-	{
-		ancillary_up_motor_r.motor_angle_goal=up_r_cm*ancillary_up_motor_r.to_angle;	
-		ancillary_up_motor_r.add_angle=abs(speed*ancillary_up_motor_r.to_angle);	
-		if(ancillary_up_motor_r.motor_angle_set==ancillary_up_motor_r.motor_angle_goal||
-			abs(ancillary_up_motor_r.motor_angle_set-ancillary_up_motor_r.motor_angle_goal)<abs(ancillary_up_motor_r.add_angle))
-		{
-			ancillary_up_motor_r.motor_angle_set=ancillary_up_motor_r.motor_angle_goal;
-		}
-		else 
-		{
-			if(ancillary_up_motor_r.motor_angle_set<ancillary_up_motor_r.motor_angle_goal)
-			{
-				ancillary_up_motor_r.motor_angle_set+=ancillary_up_motor_r.add_angle;
-			}
-			else if(ancillary_up_motor_r.motor_angle_set>ancillary_up_motor_r.motor_angle_goal)
-			{
-				ancillary_up_motor_r.motor_angle_set-=ancillary_up_motor_r.add_angle;
-			}
-		}
-	}
+// 	//左抬升
+// 	if(up_l_cm>-1)
+// 	{
+// 		ancillary_up_motor_l.motor_angle_goal=up_l_cm*ancillary_up_motor_l.to_angle;		
+// 		ancillary_up_motor_l.add_angle=abs(speed*ancillary_up_motor_l.to_angle);		
+// 		if(ancillary_up_motor_l.motor_angle_set==ancillary_up_motor_l.motor_angle_goal||
+// 			abs(ancillary_up_motor_l.motor_angle_set-ancillary_up_motor_l.motor_angle_goal)<abs(ancillary_up_motor_l.add_angle))
+// 		{
+// 			ancillary_up_motor_l.motor_angle_set=ancillary_up_motor_l.motor_angle_goal;
+// 		}
+// 		else 
+// 		{
+// 			if(ancillary_up_motor_l.motor_angle_set<ancillary_up_motor_l.motor_angle_goal)
+// 			{
+// 				ancillary_up_motor_l.motor_angle_set+=ancillary_up_motor_l.add_angle;
+// 			}
+// 			else if(ancillary_up_motor_l.motor_angle_set>ancillary_up_motor_l.motor_angle_goal)
+// 			{
+// 				ancillary_up_motor_l.motor_angle_set-=ancillary_up_motor_l.add_angle;
+// 			}
+// 		}
+// 	}
+// 	//右抬升
+// 	if(up_r_cm>-1)
+// 	{
+// 		ancillary_up_motor_r.motor_angle_goal=up_r_cm*ancillary_up_motor_r.to_angle;	
+// 		ancillary_up_motor_r.add_angle=abs(speed*ancillary_up_motor_r.to_angle);	
+// 		if(ancillary_up_motor_r.motor_angle_set==ancillary_up_motor_r.motor_angle_goal||
+// 			abs(ancillary_up_motor_r.motor_angle_set-ancillary_up_motor_r.motor_angle_goal)<abs(ancillary_up_motor_r.add_angle))
+// 		{
+// 			ancillary_up_motor_r.motor_angle_set=ancillary_up_motor_r.motor_angle_goal;
+// 		}
+// 		else 
+// 		{
+// 			if(ancillary_up_motor_r.motor_angle_set<ancillary_up_motor_r.motor_angle_goal)
+// 			{
+// 				ancillary_up_motor_r.motor_angle_set+=ancillary_up_motor_r.add_angle;
+// 			}
+// 			else if(ancillary_up_motor_r.motor_angle_set>ancillary_up_motor_r.motor_angle_goal)
+// 			{
+// 				ancillary_up_motor_r.motor_angle_set-=ancillary_up_motor_r.add_angle;
+// 			}
+// 		}
+// 	}
 
-	ancillary_up_motor_r.set_angle_limit();
-	ancillary_up_motor_l.set_angle_limit();
-	ancillary_front_motor_l.set_angle_limit();
+// 	ancillary_up_motor_r.set_angle_limit();
+// 	ancillary_up_motor_l.set_angle_limit();
+// 	ancillary_front_motor_l.set_angle_limit();
 	
-	if(abs(ancillary_front_motor_l.motor_angle-ancillary_front_motor_l.motor_angle_goal)<1500||front_l_cm<0)
-	{
-		front_l_ok=1;
-	}
-	if(abs(ancillary_front_motor_r.motor_angle-ancillary_front_motor_r.motor_angle_goal)<1500||front_r_cm<0)
-	{
-		front_r_ok=1;
-	}
-	if(abs(ancillary_up_motor_l.motor_angle-ancillary_up_motor_l.motor_angle_goal)<1500||up_l_cm<0)
-	{
-		up_l_ok=1;
-	}
-	if(abs(ancillary_up_motor_r.motor_angle-ancillary_up_motor_r.motor_angle_goal)<2000||up_r_cm<0)
-	{
-		up_r_ok=1;
-	}
-	if(front_l_ok&&front_r_ok&&up_l_ok&&up_r_ok)
-	{
-	*step+=1;
-	}
-}
+// 	if(abs(ancillary_front_motor_l.motor_angle-ancillary_front_motor_l.motor_angle_goal)<1500||front_l_cm<0)
+// 	{
+// 		front_l_ok=1;
+// 	}
+// 	if(abs(ancillary_front_motor_r.motor_angle-ancillary_front_motor_r.motor_angle_goal)<1500||front_r_cm<0)
+// 	{
+// 		front_r_ok=1;
+// 	}
+// 	if(abs(ancillary_up_motor_l.motor_angle-ancillary_up_motor_l.motor_angle_goal)<1500||up_l_cm<0)
+// 	{
+// 		up_l_ok=1;
+// 	}
+// 	if(abs(ancillary_up_motor_r.motor_angle-ancillary_up_motor_r.motor_angle_goal)<2000||up_r_cm<0)
+// 	{
+// 		up_r_ok=1;
+// 	}
+// 	if(front_l_ok&&front_r_ok&&up_l_ok&&up_r_ok)
+// 	{
+// 	*step+=1;
+// 	}
+// }
 
 // void moving_t::arm_moving_init(float yaw_f,float yaw_b,float pitch,float roll,char *step,char value)
 // {
@@ -1752,41 +1948,41 @@ if(*step!=value)
 // 	arm_moving_speed(yaw_f_speed,yaw_b_speed,pitch_speed,roll_speed,step,value);
 // }
 
-void moving_t::arm_moving_init(float yaw_f,float yaw_b,float pitch,float roll,char *step,char value)
-{
-	(void)yaw_f;
-	(void)yaw_b;
-	(void)pitch;
-	(void)roll;
-	if(step == NULL || *step != value)
-	{
-		return;
-	}
-	*step += 1;
-}
+// void moving_t::arm_moving_init(float yaw_f,float yaw_b,float pitch,float roll,char *step,char value)
+// {
+// 	(void)yaw_f;
+// 	(void)yaw_b;
+// 	(void)pitch;
+// 	(void)roll;
+// 	if(step == NULL || *step != value)
+// 	{
+// 		return;
+// 	}
+// 	*step += 1;
+// }
 
-void moving_t::arm_moving_position(float yaw_f_rad,float yaw_b_rad,float pitch_rad,float roll_rad,float speed,char *step,char value)
-{
-	(void)yaw_f_rad;
-	(void)yaw_b_rad;
-	(void)pitch_rad;
-	(void)roll_rad;
-	(void)speed;
-	if(step == NULL || *step != value)
-	{
-		return;
-	}
-	*step += 1;
-}
+// void moving_t::arm_moving_position(float yaw_f_rad,float yaw_b_rad,float pitch_rad,float roll_rad,float speed,char *step,char value)
+// {
+// 	(void)yaw_f_rad;
+// 	(void)yaw_b_rad;
+// 	(void)pitch_rad;
+// 	(void)roll_rad;
+// 	(void)speed;
+// 	if(step == NULL || *step != value)
+// 	{
+// 		return;
+// 	}
+// 	*step += 1;
+// }
 
-void moving_t::arm_moving_rc(char*step,char value)
-{
-	if(step == NULL || *step != value)
-	{
-		return;
-	}
-	*step += 1;
-}
+// void moving_t::arm_moving_rc(char*step,char value)
+// {
+// 	if(step == NULL || *step != value)
+// 	{
+// 		return;
+// 	}
+// 	*step += 1;
+// }
 
 
 

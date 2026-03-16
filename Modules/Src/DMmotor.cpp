@@ -73,7 +73,13 @@ static void DecodeDMMotor(CAN_Rx_Instance_t *rx_instance)
 		switch (dm_motor_para->mst_id)
 	{
 			case 0x00:
+			case 0x01:
 			case 0x02:
+			case 0x03:
+			case 0x04:
+			case 0x05:
+			case 0x11:
+			case 0x21:
 				get_DM4310_motor_measure(dm_motor_para, rxbuff);
 				break;
 			default:
@@ -107,8 +113,8 @@ void DMMotorInstance::DMMotorInit(DM_Motor_Setting_t *config)
 			memset(&dm_motor[Motor1], 0, sizeof(dm_motor[Motor1]));
 	// 设置Motor1的电机信息
 		
-			dm_motor[Motor1].id = (dm_motor_settings->rx_id != 0U) ? dm_motor_settings->rx_id : 0x01U;
-	    dm_motor[Motor1].mst_id  = (dm_motor_settings->mst_id != 0U) ? dm_motor_settings->mst_id : 0x02U;
+			dm_motor[Motor1].id = dm_motor_settings->rx_id;
+	    dm_motor[Motor1].mst_id  = dm_motor_settings->mst_id;
 	    dm_motor[Motor1].tmp.read_flag = 1;
 	    dm_motor[Motor1].dm_ctrl_set.mode 	= mit_mode;
 		  dm_motor[Motor1].tmp.PMAX = 3.14f;

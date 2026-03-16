@@ -94,8 +94,8 @@ void MainTask(void const *pvParameters)                //主任务
 	{
 		//系统任务
 		SystemTask();
-		MovingPointer()->Get_info();
-		MovingPointer()->Get_set();
+		// MovingPointer()->Get_info();
+		MovingPointer()->NewRobotBehaviorTask();
 //		TEST_FUNC_TIME(gimbal_test,GimbalTask());
 		//云台任务
 		GimbalTask();

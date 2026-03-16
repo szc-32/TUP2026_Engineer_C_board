@@ -67,8 +67,12 @@
 #define GIMBAL_CALC 0
 #define CHASSIS_CALC 1
 //底盘鼠标控制灵敏度
+#ifndef YAW_MOUSE_SEN
 #define YAW_MOUSE_SEN   0.00005f
+#endif
+#ifndef PITCH_MOUSE_SEN
 #define PITCH_MOUSE_SEN 0.00005f
+#endif
 //遥控器输入转化比例
 #ifdef CHASSIS_VX_RC_SEN
 #undef CHASSIS_VX_RC_SEN
