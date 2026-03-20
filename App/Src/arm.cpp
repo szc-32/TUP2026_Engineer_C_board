@@ -154,6 +154,22 @@ static ArmControlRuntime_t g_arm_ctrl = {
 	0.0f,
 	{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
 };
+extern "C" volatile uint8_t g_arm_ctrl_enable_dbg =
+#if ARM_CONTROL_TASK_ENABLE
+	1U;
+#else
+	0U;
+#endif
+extern "C" volatile uint32_t g_arm_task_tick_dbg = 0U;
+extern "C" volatile uint32_t g_arm_task_enable_true_tick_dbg = 0U;
+extern "C" volatile uint32_t g_arm_j2_mit_ctrl_tx_cnt_dbg = 0U;
+extern "C" volatile uint8_t g_arm_set_enable_arg_dbg = 0U;
+extern "C" volatile uint8_t g_arm_set_enable_src_dbg = 0U;
+extern "C" volatile uint8_t g_arm_set_enable_arg_norm_dbg = 0U;
+volatile uint8_t g_arm_j1_state_dbg = 0U;
+volatile uint8_t g_arm_j2_state_dbg = 0U;
+volatile fp32 g_arm_j1_pos_dbg = 0.0f;
+volatile fp32 g_arm_j2_pos_dbg = 0.0f;
 
 // Whether arm DM joints have been explicitly enabled in current enable session.
 static bool_t g_arm_dm_enabled = FALSE;
@@ -188,9 +204,9 @@ static const fp32 g_arm_q_max_default[ARM_DOF] = {
 };
 
 static const ArmDMJointMap_t g_arm_dm_map_default[ARM_DOF] = {
-	{1.0f, 1.0f, 0.0f, -3.1415926f, 3.1415926f, 0.0f, 15.0f, 5.0f, 0.0f},
-	{1.0f, 1.0f, 0.0f, -0.9467733f, 1.5707963f, 0.0f, 60.0f, 50.0f, 0.0f},
-	{1.0f, 1.0f, 0.0f, 0.3f, 3.5f, 1.0f, 4.0f, 0.5f, 0.0f},
+	{1.0f, 1.0f, 0.0f, -3.1415926f, 3.1415926f, 0.0f, 30.0f, 5.0f, 0.0f},
+	{1.0f, 1.0f, 0.0f, -0.9467733f, 1.5707963f, 0.0f, 25.0f, 2.0f, 0.0f},
+	{1.0f, 1.0f, 0.0f, 0.3f,        3.5f,       0.0f, 4.0f, 1.0f, 0.0f},
 	{1.0f, 1.0f, 0.0f, -1.5707963f, 1.5707963f, 0.0f, 15.0f, 1.0f, 0.0f},
 	{1.0f, 1.0f, 0.0f, -1.5707963f, 1.5707963f, 0.0f, 15.0f, 1.0f, 0.0f},
 	{1.0f, 1.0f, 0.0f, 0.0f, 3.1415926f, 0.0f, 15.0f, 1.0f, 0.0f},
@@ -235,6 +251,30 @@ static hcan_t *ArmGetCanHandle(CAN_NAME_e can_id)
 }
 
 static void ArmControlEnsureInit(void);
+static void ArmUpdateJoint12DebugMirror(void);
+
+static void ArmUpdateJoint12DebugMirror(void)
+{
+	if (g_arm_ctrl.inited == FALSE)
+	{
+		return;
+	}
+
+	DMmotor_fbpara_t *j1 = g_arm_ctrl.joint_motor[0].GetDMMotorMeasure();
+	DMmotor_fbpara_t *j2 = g_arm_ctrl.joint_motor[1].GetDMMotorMeasure();
+
+	if (j1 != 0)
+	{
+		g_arm_j1_state_dbg = (uint8_t)j1->state;
+		g_arm_j1_pos_dbg = j1->pos;
+	}
+
+	if (j2 != 0)
+	{
+		g_arm_j2_state_dbg = (uint8_t)j2->state;
+		g_arm_j2_pos_dbg = j2->pos;
+	}
+}
 
 // 流程说明：按“前N轴”发送一次达妙使能帧。
 // 用途：支持分阶段启用（例如 INIT 先启 J1~J4），避免一次性拉起全部关节。
@@ -301,6 +341,7 @@ static void ArmControlEnsureInit(void)
 	}
 
 	g_arm_ctrl.inited = TRUE;
+	ArmUpdateJoint12DebugMirror();
 }
 
 // 加载达妙映射默认参数
@@ -452,10 +493,20 @@ void ArmControlTaskInit(void)
 
 void ArmControlSetEnable(bool_t enable)
 {
+	const uint8_t enable_raw = (uint8_t)enable;
+	const bool_t enable_norm = (enable_raw != 0U) ? TRUE : FALSE;
+	g_arm_set_enable_arg_dbg = enable_raw;
+	g_arm_set_enable_arg_norm_dbg = (uint8_t)enable_norm;
+	if (g_arm_set_enable_src_dbg == 0U)
+	{
+		// 0 means caller did not tag source before invocation.
+		g_arm_set_enable_src_dbg = 3U;
+	}
 	// 仅切换使能状态，不重置目标和初值
-	g_arm_ctrl.enable = enable;
+	g_arm_ctrl.enable = enable_norm;
+	g_arm_ctrl_enable_dbg = (uint8_t)enable_norm;
 
-	if (enable == FALSE)
+	if (enable_norm == FALSE)
 	{
 		// Re-send enable when next time arm is enabled.
 		g_arm_dm_enabled = FALSE;
@@ -473,6 +524,7 @@ void ArmControlEnableHomeJointsJ1J3(void)
 	}
 
 	g_arm_ctrl.enable = TRUE;
+	g_arm_ctrl_enable_dbg = 1U;
 	ArmEnableDMJointRange(3);
 	g_arm_init_joint_enabled = TRUE;
 }
@@ -602,6 +654,10 @@ bool_t ArmControlHoldJointQ(const fp32 q_target[ARM_DOF], fp32 gripper_target)
 	{
 		DM_motor_t *motor = &g_arm_ctrl.joint_motor[i].dm_motor[Motor1];
 		hcan_t *hcan = ArmGetCanHandle((CAN_NAME_e)g_arm_ctrl.joint_setting[i].can_id);
+		if (i == 1U)
+		{
+			g_arm_j2_mit_ctrl_tx_cnt_dbg++;
+		}
 		g_arm_ctrl.joint_motor[i].DMMotorControl(hcan, motor);
 	}
 
@@ -708,10 +764,19 @@ bool_t ArmControlCalibrateZeroOffsetFromCurrent(const fp32 q_ref[ARM_DOF])
 // 其中 seed 连续更新是数值 IK 稳定收敛的关键。
 void ArmControlTask(void)
 {
+	g_arm_task_tick_dbg++;
+
+	if (g_arm_ctrl.inited == TRUE)
+	{
+		ArmUpdateJoint12DebugMirror();
+	}
+
 	if (g_arm_ctrl.enable == FALSE)
 	{
 		return;
 	}
+
+	g_arm_task_enable_true_tick_dbg++;
 
 	// 确保首次进入时完成达妙关节实例注册
 	ArmControlEnsureInit();
@@ -756,9 +821,19 @@ void ArmControlTask(void)
 		{
 			DM_motor_t *motor = &g_arm_ctrl.joint_motor[i].dm_motor[Motor1];
 			hcan_t *hcan = ArmGetCanHandle((CAN_NAME_e)g_arm_ctrl.joint_setting[i].can_id);
+			if (i == 1U)
+			{
+				g_arm_j2_mit_ctrl_tx_cnt_dbg++;
+			}
+			if (i == 1U)
+			{
+				g_arm_j2_mit_ctrl_tx_cnt_dbg++;
+			}
 			g_arm_ctrl.joint_motor[i].DMMotorControl(hcan, motor);
 		}
 	}
+
+	ArmUpdateJoint12DebugMirror();
 
 	// 将本次解作为下一次迭代初值，提高收敛速度和稳定性
 	memcpy(g_arm_ctrl.q_seed, joint_cmd.q, sizeof(g_arm_ctrl.q_seed));

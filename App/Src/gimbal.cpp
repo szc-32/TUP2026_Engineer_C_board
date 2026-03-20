@@ -528,7 +528,7 @@ void gimbal_t::RelativeControl()
 		yaw_dm->dm_ctrl_set.mode = mit_mode;
 		yaw_dm->dm_ctrl_set.pos_set = INIT_YAW_SET;
 		yaw_dm->dm_ctrl_set.vel_set = 1.0f;
-		yaw_dm->dm_ctrl_set.kp_set = 13.50f;
+		yaw_dm->dm_ctrl_set.kp_set = 15.0f;
 		yaw_dm->dm_ctrl_set.kd_set = 4.50f;
 		yaw_dm->dm_ctrl_set.tor_set = 0.0f;
 

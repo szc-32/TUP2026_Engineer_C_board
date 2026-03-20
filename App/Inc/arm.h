@@ -41,10 +41,9 @@ extern "C" {
 
 // 六轴初始化关节角（单位rad）
 #define ARM_HOME_Q1_RAD -0.42f
-#define ARM_HOME_Q2_RAD 0.05f
+#define ARM_HOME_Q2_RAD -0.15f
 #define ARM_HOME_Q3_RAD 0.0f
 #define ARM_HOME_Q4_RAD 0.0f
-
 #define ARM_HOME_Q5_RAD 0.0f
 #define ARM_HOME_Q6_RAD 0.0f
 

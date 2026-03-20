@@ -6,6 +6,9 @@
 #include "buzzer.h"
 #include "DMmotor.h"
 
+extern "C" volatile uint8_t g_arm_set_enable_src_dbg;
+extern "C" volatile uint32_t g_arm_j2_disable_tx_cnt_dbg = 0U;
+
 // DM机械臂自定义控制器增益（集中配置）
 #define DM_ARM_CUSTOM_POS_GAIN            0.0008f
 #define DM_ARM_CUSTOM_ROT_GAIN            0.0020f
@@ -43,6 +46,7 @@
 #define DM_ARM_SLEW_XY_STEP_MAX           0.0020f
 #define DM_ARM_SLEW_Z_STEP_MAX            0.0016f
 #define DM_ARM_SLEW_YAW_STEP_MAX          0.0060f
+#define DM_ARM_RC_OFFLINE_DEBOUNCE_TICKS  30U
 
 static bool_t g_dm_arm_target_inited = FALSE;
 static ArmPose_t g_dm_arm_target_pose = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
@@ -52,6 +56,15 @@ static fp32 g_dm_arm_locked_pitch = 0.0f;
 static fp32 g_dm_arm_locked_roll = 0.0f;
 static bool_t g_dm_arm_custom_input_active = FALSE;
 static bool_t g_dm_arm_init_pose_inited = FALSE;
+static bool_t g_dm_arm_idle_disable_sent = FALSE;
+static uint16_t g_dm_arm_idle_disable_refresh_tick = 0;
+static uint8_t g_dm_arm_zero_force_debounce_cnt = 0;
+static bool_t g_dm_arm_manual_enable_refreshed = FALSE;
+static uint16_t g_dm_arm_rc_offline_cnt = 0;
+extern "C" volatile uint16_t g_dm_arm_rc_offline_cnt_dbg = 0;
+extern "C" volatile uint8_t g_behavior_monitor_rc_dbg = 0;
+extern "C" volatile uint8_t g_behavior_early_return_dbg = 0;
+extern "C" volatile uint32_t g_behavior_task_hb_dbg = 0;
 static fp32 g_dm_arm_init_q[ARM_DOF] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 static uint8_t g_dm_arm_home_stable_count = 0;
 static uint16_t g_dm_gyro_cali_count = 0;
@@ -793,14 +806,68 @@ moving_t *MovingPointer(void)
 
 void moving_t::NewRobotBehaviorTask()
 {
+	g_behavior_task_hb_dbg++;
 	// 行为调度总入口（每周期调用）：
 	// 1) 先依据系统 mode 决定是否允许机械臂控制链工作；
 	// 2) 检测工程模式切换并执行一次性切换清理；
 	// 3) 按当前 engineer_mode 直接执行对应行为函数。
-	ArmControlSetEnable((SysPointer()->mode == ZERO_FORCE_MOVE) ? FALSE : TRUE);
+	const bool_t rc_ok = MonitorRc();
+	g_behavior_monitor_rc_dbg = (uint8_t)rc_ok;
+	if (rc_ok == FALSE)
+	{
+		g_behavior_early_return_dbg = 1U;
+		if (g_dm_arm_rc_offline_cnt < DM_ARM_RC_OFFLINE_DEBOUNCE_TICKS)
+		{
+			g_dm_arm_rc_offline_cnt++;
+		}
+		g_dm_arm_rc_offline_cnt_dbg = g_dm_arm_rc_offline_cnt;
+
+		if (g_dm_arm_rc_offline_cnt >= DM_ARM_RC_OFFLINE_DEBOUNCE_TICKS)
+		{
+			// 遥控离线硬保护：连续离线达到阈值后强制失能并短路后续逻辑。
+			hcan_t *arm_can = (ARM_CONTROL_DM_CAN == ON_CAN1) ? &hcan1 : &hcan2;
+			for (uint16_t motor_id = ARM_CONTROL_DM_RX_ID_BASE; motor_id < (ARM_CONTROL_DM_RX_ID_BASE + ARM_DOF); motor_id++)
+			{
+				if (motor_id == ARM_CONTROL_DM_J2_RX_ID)
+				{
+					g_arm_j2_disable_tx_cnt_dbg++;
+				}
+				disable_motor_mode(arm_can, motor_id, MIT_MODE);
+			}
+			g_arm_set_enable_src_dbg = 1U;
+			ArmControlSetEnable(FALSE);
+			g_dm_arm_idle_disable_sent = TRUE;
+		}
+		return;
+	}
+
+	g_behavior_early_return_dbg = 0U;
+	g_dm_arm_rc_offline_cnt = 0;
+	g_dm_arm_rc_offline_cnt_dbg = g_dm_arm_rc_offline_cnt;
+
+	// Debounce ZERO_FORCE to avoid RC switch jitter causing enable/disable flapping.
+	const bool_t zero_force_req = (SysPointer()->engineer_mode == ZERO_FORCE) ? TRUE : FALSE;
+	if (zero_force_req == TRUE)
+	{
+		if (g_dm_arm_zero_force_debounce_cnt < 10U)
+		{
+			g_dm_arm_zero_force_debounce_cnt++;
+		}
+	}
+	else
+	{
+		g_dm_arm_zero_force_debounce_cnt = 0U;
+	}
+
+	const bool_t arm_enable_by_behavior =
+		(g_dm_arm_zero_force_debounce_cnt >= 10U) ? FALSE : TRUE;
+	g_arm_set_enable_src_dbg = 4U;
+	ArmControlSetEnable(arm_enable_by_behavior);
 	if (SysPointer()->engineer_mode != last_sys_behaviour)
 	{
 		OnBehaviorModeChange();
+		// 锁存当前模式，确保切换钩子只在模式变化时触发一次。
+		last_sys_behaviour = SysPointer()->engineer_mode;
 	}
 	UpdateBehaviorMode();
 }
@@ -845,15 +912,49 @@ void moving_t::OnBehaviorModeChange()
 	g_dm_arm_init_pose_inited = FALSE;
 	g_dm_arm_home_stable_count = 0;
 	g_dm_gyro_cali_count = 0;
+	g_dm_arm_idle_disable_sent = FALSE;
+	g_dm_arm_idle_disable_refresh_tick = 0;
+	g_dm_arm_zero_force_debounce_cnt = 0;
+	g_dm_arm_manual_enable_refreshed = FALSE;
 	SysPointer()->arm_home_done = FALSE;
 }
 
 void moving_t::BehaviorIdle()
 {
+	hcan_t *arm_can = (ARM_CONTROL_DM_CAN == ON_CAN1) ? &hcan1 : &hcan2;
+	bool_t need_send = FALSE;
+
+	if (g_dm_arm_idle_disable_sent == FALSE)
+	{
+		need_send = TRUE;
+	}
+	else
+	{
+		if (g_dm_arm_idle_disable_refresh_tick < 20U)
+		{
+			g_dm_arm_idle_disable_refresh_tick++;
+		}
+		else
+		{
+			g_dm_arm_idle_disable_refresh_tick = 0U;
+			need_send = TRUE;
+		}
+	}
+
+	if (need_send == FALSE)
+	{
+		return;
+	}
+
 	for (uint16_t motor_id = ARM_CONTROL_DM_RX_ID_BASE; motor_id < (ARM_CONTROL_DM_RX_ID_BASE + 3U); motor_id++)
 	{
-		disable_motor_mode(&hcan1, motor_id, MIT_MODE);
+		if (motor_id == ARM_CONTROL_DM_J2_RX_ID)
+		{
+			g_arm_j2_disable_tx_cnt_dbg++;
+		}
+		disable_motor_mode(arm_can, motor_id, MIT_MODE);
 	}
+	g_dm_arm_idle_disable_sent = TRUE;
 }
 
 void moving_t::BehaviorHome()
@@ -958,37 +1059,86 @@ void moving_t::BehaviorHome()
 
 void moving_t::BehaviorDMArmManual()
 {
-	// 手动行为：目标由键鼠/遥控器实时增量更新，mode 固定为 NORMAL。
-	// 当无输入时进入“相对云台保持”，减少末端漂移感。
+	// 手动行为：进入时按BehaviorHome流程补发一轮使能，再仅使用遥控器通道做关节角增量。
 	SysPointer()->arm_home_done = FALSE;
-
-	if (DMArmApplyRCJointIncrementMode() == TRUE)
+	if (g_dm_arm_manual_enable_refreshed == FALSE)
 	{
-		// 左上右中/左上右下：进入新“关节增量+保持”执行方案，底盘固定为相对角度模式。
-		if (SysPointer()->mode != RELATIVE_ANGLE)
-		{
-			SysPointer()->mode = RELATIVE_ANGLE;
-		}
-		ClearDMArmHold();
-		return;
-	}
+		ArmDMJointMap_t dm_map[ARM_DOF];
+		DM_motor_t mit_motor;
+		fp32 q_ref[ARM_DOF];
+		hcan_t *arm_can = (ARM_CONTROL_DM_CAN == ON_CAN1) ? &hcan1 : &hcan2;
 
-	DMArmResetJointTarget();
-	DMArmEnsureTargetInit();
-	DMArmUpdateTargetFromInput();
+		if (ArmControlGetJointFeedbackQ(q_ref) == FALSE)
+		{
+			const fp32 *home_q = ArmGetHomeQ();
+			for (uint8_t i = 0; i < ARM_DOF; i++)
+			{
+				q_ref[i] = home_q[i];
+			}
+		}
+
+		ArmGetDMJointMap(dm_map);
+		for (uint8_t i = 0; i < ARM_DOF; i++)
+		{
+			const uint16_t motor_id = (uint16_t)(ARM_CONTROL_DM_RX_ID_BASE + i);
+			const fp32 q_motor_raw = dm_map[i].direction * dm_map[i].reduction_ratio * q_ref[i] + dm_map[i].zero_offset;
+			const fp32 q_motor_cmd = DMArmClampValue(q_motor_raw, dm_map[i].pos_min, dm_map[i].pos_max);
+			fp32 pmax = DMArmAbsValue(dm_map[i].pos_min);
+			fp32 vmax = DMArmAbsValue(dm_map[i].vel_ff);
+			fp32 tmax = DMArmAbsValue(dm_map[i].tor_ff);
+
+			if (DMArmAbsValue(dm_map[i].pos_max) > pmax)
+			{
+				pmax = DMArmAbsValue(dm_map[i].pos_max);
+			}
+			if (pmax < 0.01f)
+			{
+				pmax = 3.14f;
+			}
+			if (vmax < 1.0f)
+			{
+				vmax = 1.0f;
+			}
+			if (tmax < 1.0f)
+			{
+				tmax = 10.0f;
+			}
+
+			enable_motor_mode(arm_can, motor_id, MIT_MODE);
+			mit_motor.tmp.PMAX = pmax;
+			mit_motor.tmp.VMAX = vmax;
+			mit_motor.tmp.TMAX = tmax;
+			mit_ctrl(arm_can,
+				&mit_motor,
+				motor_id,
+				q_motor_cmd,
+				dm_map[i].vel_ff,
+				dm_map[i].kp,
+				dm_map[i].kd,
+				dm_map[i].tor_ff);
+
+			g_dm_arm_joint_target_q[i] = q_ref[i];
+		}
+
+		ArmControlSetSeedQ(q_ref);
+		g_dm_arm_joint_target_inited = TRUE;
+		g_dm_arm_manual_enable_refreshed = TRUE;
+	}
 
 	if (SysPointer()->mode != RELATIVE_ANGLE)
 	{
 		SysPointer()->mode = RELATIVE_ANGLE;
 	}
 
-	if (DMArmHasInputCommand())
+	if (DMArmApplyRCJointIncrementMode() == TRUE)
 	{
 		ClearDMArmHold();
 		return;
 	}
 
-	HoldDMArmRelativeToGimbal();
+	// 不在遥控关节增量拨杆位时，保持当前关节目标，不切到键鼠位姿控制链。
+	ArmControlHoldInitJointQ(g_dm_arm_joint_target_q, 0.0f);
+	ClearDMArmHold();
 }
 
 void moving_t::BehaviorDMArmAuto()

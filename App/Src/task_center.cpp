@@ -46,7 +46,7 @@ void RobotInit()
 	MonitorInit();
 	// Legacy calibrate module is disabled; keep only the new arm calibration pipeline.
 	// CaliInit();
-	// GripperInit(); // Disable during chassis/gimbal-only debug.
+	GripperInit();
 	
 	//初始化完成，开启中断
 	__enable_irq();
@@ -105,7 +105,7 @@ void MainTask(void const *pvParameters)                //主任务
 		// RevolverTask();
 		// LiftingTask();   // Disable during chassis/gimbal-only debug.
 		// SuctionCupTask(); // Disable during chassis/gimbal-only debug.
-		// GripperTask();   // Disable during chassis/gimbal-only debug.
+		GripperTask();
 		ArmControlTask();
 
 		vTaskDelayUntil(&currentTime,1);

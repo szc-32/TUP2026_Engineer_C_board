@@ -53,6 +53,8 @@
 /* USER CODE BEGIN 0 */
 
 /* USER CODE END 0 */
+volatile uint8_t g_fault_type_dbg = 0;
+volatile uint32_t g_fault_loop_cnt_dbg = 0;
 
 /* External variables --------------------------------------------------------*/
 extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
@@ -95,12 +97,14 @@ void NMI_Handler(void)
   */
 void HardFault_Handler(void)
 {
+	g_fault_type_dbg = 1U;
   /* USER CODE BEGIN HardFault_IRQn 0 */
 
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
     /* USER CODE BEGIN W1_HardFault_IRQn 0 */
+	g_fault_loop_cnt_dbg++;
     /* USER CODE END W1_HardFault_IRQn 0 */
   }
 }
@@ -110,12 +114,14 @@ void HardFault_Handler(void)
   */
 void MemManage_Handler(void)
 {
+	g_fault_type_dbg = 2U;
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
 
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {
     /* USER CODE BEGIN W1_MemoryManagement_IRQn 0 */
+	g_fault_loop_cnt_dbg++;
     /* USER CODE END W1_MemoryManagement_IRQn 0 */
   }
 }
@@ -125,12 +131,14 @@ void MemManage_Handler(void)
   */
 void BusFault_Handler(void)
 {
+	g_fault_type_dbg = 3U;
   /* USER CODE BEGIN BusFault_IRQn 0 */
 
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
     /* USER CODE BEGIN W1_BusFault_IRQn 0 */
+	g_fault_loop_cnt_dbg++;
     /* USER CODE END W1_BusFault_IRQn 0 */
   }
 }
@@ -140,12 +148,14 @@ void BusFault_Handler(void)
   */
 void UsageFault_Handler(void)
 {
+	g_fault_type_dbg = 4U;
   /* USER CODE BEGIN UsageFault_IRQn 0 */
 
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {
     /* USER CODE BEGIN W1_UsageFault_IRQn 0 */
+	g_fault_loop_cnt_dbg++;
     /* USER CODE END W1_UsageFault_IRQn 0 */
   }
 }

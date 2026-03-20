@@ -41,6 +41,11 @@
 system_t sys;
 
 static bool_t g_rc_online_debug = FALSE;
+extern "C" volatile uint8_t g_rc_online_debug_dbg = 0;
+extern "C" volatile uint8_t g_sys_mode_dbg = 0;
+extern "C" volatile uint8_t g_sys_engineer_mode_dbg = 0;
+extern "C" volatile uint8_t g_monitor_rc_dbg = 0;
+extern "C" volatile uint32_t g_system_task_hb_dbg = 0;
 
 static void SystemDebugPrint(void)
 {
@@ -116,12 +121,15 @@ void SysInit()
   */
 void SystemTask()
 {
+	g_system_task_hb_dbg++;
 	/*****模式设置*****/
 	sys.KeyBoardModeSet(); //键盘设置
 	sys.ThumbWheelModeSet(); 	 //拨轮设置
 	sys.RobotModeSet();  //机器人模式设置
 	/*****操作量设置*****/
 	sys.CalControlQuantity();
+	g_sys_mode_dbg = (uint8_t)sys.sys_pub.mode;
+	g_sys_engineer_mode_dbg = (uint8_t)sys.sys_pub.engineer_mode;
 	SystemDebugPrint();
 }
 
@@ -154,6 +162,8 @@ void system_t::RobotModeSet()
 
 	/*****遥控器失联模式判断*****/
 	g_rc_online_debug = MonitorRc();
+	g_rc_online_debug_dbg = (uint8_t)g_rc_online_debug;
+	g_monitor_rc_dbg = (uint8_t)g_rc_online_debug;
 	if(!g_rc_online_debug)
 	{
 		// Keep safety limits, but do not block following mode/gesture logic.
